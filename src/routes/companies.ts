@@ -6,7 +6,6 @@ import { db } from '../db/client.js'
 import { companies, mailboxes, people } from '../db/schema.js'
 import { openRouterReasoningConfig } from '../lib/openrouter.js'
 import { startSweepDueAccounts, startWorkAccount } from '../lib/workflowTrigger.js'
-import { requiredEnv } from '../workflows/repo.js'
 import {
   listRecentDrafts,
   listRecentOutreachEvents,
@@ -153,6 +152,14 @@ function extractJsonObject(text: string): unknown {
   return JSON.parse(text.slice(start, end + 1)) as unknown
 }
 
+function requiredOpenRouterApiKey(): string {
+  const value = process.env.OPENROUTER_API_KEY
+  if (!value) {
+    throw new Error('OPENROUTER_API_KEY is required for agentic search')
+  }
+  return value
+}
+
 async function mapWithConcurrency<T, U>(
   items: T[],
   limit: number,
@@ -257,7 +264,7 @@ companiesRoutes.post('/agentic-search', async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
 
-  const apiKey = requiredEnv('OPENROUTER_API_KEY')
+  const apiKey = requiredOpenRouterApiKey()
   const { criteria, companyIds } = parsed.data
 
   const companyRows = await db
