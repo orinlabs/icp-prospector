@@ -52,22 +52,8 @@ export function TopBar({
 function BrandMark() {
   return (
     <div className="flex items-center gap-2 pr-1">
-      <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <svg
-          viewBox="0 0 16 16"
-          className="size-3.5"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <circle cx="7" cy="7" r="4" />
-          <path d="M10 10 13.5 13.5" />
-        </svg>
-      </div>
-      <span className="text-[13px] font-semibold tracking-tight">flash</span>
+      <img src="/favicon.svg" alt="" className="size-6 rounded-md" aria-hidden />
+      <span className="text-[13px] font-semibold tracking-tight">Flash</span>
     </div>
   )
 }
