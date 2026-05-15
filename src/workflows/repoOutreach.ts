@@ -361,6 +361,58 @@ export async function listDrafts(input: {
   }
 }
 
+const MAX_OUTREACH_EMAIL_INSTRUCTIONS = 24_000
+
+function appendOutreachInstructionBlock(
+  existing: string | null | undefined,
+  header: string,
+  lines: string[]
+): string {
+  if (lines.length === 0) return (existing ?? '').trim()
+  const body = lines.map((l) => `- ${l}`).join('\n')
+  const block = `${header}\n${body}`.trim()
+  const base = existing?.trim() ? existing.trim() + '\n\n---\n\n' : ''
+  const merged = (base + block).trim()
+  if (merged.length <= MAX_OUTREACH_EMAIL_INSTRUCTIONS) return merged
+  return merged.slice(-MAX_OUTREACH_EMAIL_INSTRUCTIONS)
+}
+
+export async function appendCompanyOutreachEmailInstructions(
+  companyId: string,
+  lines: string[]
+): Promise<void> {
+  if (lines.length === 0) return
+  const [row] = await db
+    .select({ cur: companies.outreachEmailInstructions })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1)
+  const header = `From draft feedback (${new Date().toISOString().slice(0, 10)}):`
+  const next = appendOutreachInstructionBlock(row?.cur, header, lines)
+  await db
+    .update(companies)
+    .set({ outreachEmailInstructions: next, updatedAt: new Date() })
+    .where(eq(companies.id, companyId))
+}
+
+export async function appendMailboxOutreachEmailInstructions(
+  mailboxId: string,
+  lines: string[]
+): Promise<void> {
+  if (lines.length === 0) return
+  const [row] = await db
+    .select({ cur: mailboxes.outreachEmailInstructions })
+    .from(mailboxes)
+    .where(eq(mailboxes.id, mailboxId))
+    .limit(1)
+  const header = `From draft feedback (${new Date().toISOString().slice(0, 10)}):`
+  const next = appendOutreachInstructionBlock(row?.cur, header, lines)
+  await db
+    .update(mailboxes)
+    .set({ outreachEmailInstructions: next, updatedAt: new Date() })
+    .where(eq(mailboxes.id, mailboxId))
+}
+
 export async function countPendingDraftsByCompany(): Promise<Map<string, number>> {
   const rows = await db
     .select({

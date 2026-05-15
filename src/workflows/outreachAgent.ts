@@ -19,6 +19,7 @@ import {
   searchPeople,
   upsertPerson
 } from './repo.js'
+import { LAVENDER_COLD_EMAIL_101_PROMPT_BLOCK } from '../lib/lavenderColdEmail101.js'
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 /** Work-account agent only; override with OPENROUTER_WORK_ACCOUNT_MODEL. */
@@ -757,6 +758,8 @@ function buildSystemPrompt(): string {
     '- Content hooks: their recent blog posts, tweets, talks, hiring patterns, jobs posted.',
     '- Mutuals already in our DB (use search_existing_people).',
     '',
+    LAVENDER_COLD_EMAIL_101_PROMPT_BLOCK,
+    '',
     'Recipient and email-address rules:',
     '- Never draft_email to generic role inboxes (hello@, info@, contact@, sales@, support@, team@, office@, media@) unless the strategy explicitly targets that inbox AND you have sourced proof that this thread or owner is correct.',
     '- Never use an address you cannot defend: prefer a verified address from the web, press, filings, or our DB. If you cannot find the exact address but you did find the company’s real pattern (e.g. first.last@domain.com, flast@, f.last@) from staff listings, press quotes, or similar, you MAY construct the likely address for a named individual and explain the pattern + sources in agent_rationale — that is acceptable when the pattern is well-supported even if the exact mailbox is unlisted.',
@@ -767,6 +770,7 @@ function buildSystemPrompt(): string {
     '- Use only real, sourced information. Never invent a person, email, or fact.',
     '- Drafts you create with draft_email do NOT get sent automatically. The operator reviews them in the Drafts UI and approves them; only then do they send.',
     '- Be specific. Generic cold copy is rejected by the operator.',
+    '- In draft_email subject and body: do not use an em dash (the long punctuation dash, U+2014). Use a comma, period, colon, hyphen, or parentheses instead.',
     '- When emails are actually sent from the Drafts UI, the system records that on the timeline automatically; use list_recent_events to see sends and failures.',
     '- Always end the session with sleep, pause, or mark_completed. Never just stop talking.',
     '- Communicate only through tool calls; do not produce a final text answer.'
@@ -795,6 +799,22 @@ function buildSeedUserMessage(input: {
         .filter(Boolean)
         .join('\n')
     : 'WARNING: no mailbox is assigned. Do NOT call draft_email. Update the strategy and sleep.'
+
+  const mailboxInstr = company.mailbox?.outreachEmailInstructions?.trim()
+  const accountInstr = company.outreachEmailInstructions?.trim()
+  const operatorEmailInstructionsBlock =
+    mailboxInstr || accountInstr
+      ? [
+          mailboxInstr
+            ? `Mailbox-wide operator email instructions (every account using this mailbox):\n"""\n${mailboxInstr}\n"""`
+            : '',
+          accountInstr
+            ? `This account's operator email instructions:\n"""\n${accountInstr}\n"""`
+            : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      : 'Operator email instructions: (none saved yet — the operator can add them from draft feedback or company/mailbox settings.)'
 
   const strategyBlock = strategy?.trim()
     ? `Current strategy (verbatim, editable by operator between runs):\n"""\n${strategy.trim()}\n"""`
@@ -844,6 +864,8 @@ function buildSeedUserMessage(input: {
     company.hqLocation ? `HQ: ${company.hqLocation}` : '',
     '',
     mailboxBlock,
+    '',
+    operatorEmailInstructionsBlock,
     '',
     strategyBlock,
     '',

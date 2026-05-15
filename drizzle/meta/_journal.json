@@ -29,6 +29,20 @@
       "when": 1778818881789,
       "tag": "0003_app_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1778820000000,
+      "tag": "0004_outreach_email_style_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778821000000,
+      "tag": "0005_outreach_email_instructions",
+      "breakpoints": true
     }
   ]
 }

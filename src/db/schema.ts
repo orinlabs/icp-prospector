@@ -26,6 +26,8 @@ export const companies = pgTable(
     outreachStatus: text('outreach_status').notNull().default('dormant'),
     outreachMailboxId: uuid('outreach_mailbox_id'),
     outreachStrategy: text('outreach_strategy'),
+    /** Operator standing instructions for cold email copy (merged into agent prompt for this account). */
+    outreachEmailInstructions: text('outreach_email_instructions'),
     outreachNextWakeAt: timestamp('outreach_next_wake_at', { withTimezone: true }),
     outreachStartedAt: timestamp('outreach_started_at', { withTimezone: true }),
     outreachLastWorkedAt: timestamp('outreach_last_worked_at', { withTimezone: true }),
@@ -51,6 +53,8 @@ export const mailboxes = pgTable(
     displayName: text('display_name'),
     signature: text('signature'),
     senderBio: text('sender_bio'),
+    /** Operator standing instructions for cold email copy for every account using this mailbox. */
+    outreachEmailInstructions: text('outreach_email_instructions'),
     oauthRefreshToken: text('oauth_refresh_token'),
     oauthAccessToken: text('oauth_access_token'),
     oauthExpiresAt: timestamp('oauth_expires_at', { withTimezone: true }),

@@ -7,6 +7,8 @@ import { companies, mailboxes, outreachDrafts, outreachEvents, people } from '..
 import { sendMessage } from '../lib/gmail/send.js'
 import { startWorkAccount } from '../lib/workflowTrigger.js'
 import {
+  appendCompanyOutreachEmailInstructions,
+  appendMailboxOutreachEmailInstructions,
   appendOutreachEvent,
   listDrafts,
   markDraftDiscarded,
@@ -14,6 +16,7 @@ import {
   markDraftSent,
   patchDraft
 } from '../workflows/repoOutreach.js'
+import { extractDraftFeedbackInstructionLines } from '../lib/extractDraftFeedbackInstructions.js'
 
 export const draftsRoutes = new Hono()
 
@@ -34,8 +37,41 @@ const patchSchema = z.object({
 })
 
 const regenerateSchema = z.object({
-  reviewNotes: z.string().min(1).max(8000)
+  reviewNotes: z.string().min(1).max(8000),
+  saveInstructionsToAccount: z.boolean().optional(),
+  saveInstructionsToMailbox: z.boolean().optional()
 })
+
+const discardBodySchema = z.object({
+  reviewNotes: z.string().max(8000).optional(),
+  saveInstructionsToAccount: z.boolean().optional(),
+  saveInstructionsToMailbox: z.boolean().optional()
+})
+
+async function maybeAppendEmailInstructionsFromFeedback(input: {
+  reviewNotes: string
+  companyId: string
+  mailboxId: string
+  saveToAccount: boolean
+  saveToMailbox: boolean
+}): Promise<{ lines: string[]; error?: string }> {
+  if (!input.saveToAccount && !input.saveToMailbox) {
+    return { lines: [] }
+  }
+  try {
+    const lines = await extractDraftFeedbackInstructionLines(input.reviewNotes)
+    if (input.saveToAccount) {
+      await appendCompanyOutreachEmailInstructions(input.companyId, lines)
+    }
+    if (input.saveToMailbox) {
+      await appendMailboxOutreachEmailInstructions(input.mailboxId, lines)
+    }
+    return { lines }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    return { lines: [], error: message }
+  }
+}
 
 draftsRoutes.get('/', async (c) => {
   const parsed = listQuerySchema.safeParse({
@@ -186,23 +222,36 @@ draftsRoutes.post('/:id/approve', async (c) => {
 
 draftsRoutes.post('/:id/discard', async (c) => {
   const id = c.req.param('id')
-  const body = (await c.req
-    .json()
-    .catch(() => ({}))) as { reviewNotes?: string }
+  const parsed = discardBodySchema.safeParse(await c.req.json().catch(() => ({})))
+  if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400)
+  const body = parsed.data
   const [existing] = await db
     .select()
     .from(outreachDrafts)
     .where(eq(outreachDrafts.id, id))
     .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
-  const updated = await markDraftDiscarded(id, body?.reviewNotes ?? null)
+  const notes = body.reviewNotes?.trim() ?? ''
+  const saveAccount = Boolean(body.saveInstructionsToAccount)
+  const saveMailbox = Boolean(body.saveInstructionsToMailbox)
+  let instructionAppend: { lines: string[]; error?: string } = { lines: [] }
+  if (notes && (saveAccount || saveMailbox)) {
+    instructionAppend = await maybeAppendEmailInstructionsFromFeedback({
+      reviewNotes: notes,
+      companyId: existing.companyId,
+      mailboxId: existing.mailboxId,
+      saveToAccount: saveAccount,
+      saveToMailbox: saveMailbox
+    })
+  }
+  const updated = await markDraftDiscarded(id, notes || null)
   await appendOutreachEvent({
     companyId: existing.companyId,
     kind: 'note',
     summary: `Operator discarded draft: ${existing.subject}`,
-    details: { draftId: id, reviewNotes: body?.reviewNotes ?? null }
+    details: { draftId: id, reviewNotes: notes || null }
   })
-  return c.json(updated)
+  return c.json({ ...updated, instructionAppend })
 })
 
 draftsRoutes.post('/:id/regenerate', async (c) => {
@@ -215,6 +264,18 @@ draftsRoutes.post('/:id/regenerate', async (c) => {
     .where(eq(outreachDrafts.id, id))
     .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
+  const saveAccount = Boolean(parsed.data.saveInstructionsToAccount)
+  const saveMailbox = Boolean(parsed.data.saveInstructionsToMailbox)
+  let instructionAppend: { lines: string[]; error?: string } = { lines: [] }
+  if (saveAccount || saveMailbox) {
+    instructionAppend = await maybeAppendEmailInstructionsFromFeedback({
+      reviewNotes: parsed.data.reviewNotes,
+      companyId: existing.companyId,
+      mailboxId: existing.mailboxId,
+      saveToAccount: saveAccount,
+      saveToMailbox: saveMailbox
+    })
+  }
   const discarded = await markDraftDiscarded(id, parsed.data.reviewNotes)
   await appendOutreachEvent({
     companyId: existing.companyId,
@@ -237,6 +298,7 @@ draftsRoutes.post('/:id/regenerate', async (c) => {
   return c.json({
     ok: true,
     discardedDraft: discarded,
+    instructionAppend,
     workflowTriggered,
     error: workflowError,
     hint: workflowTriggered

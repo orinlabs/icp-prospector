@@ -102,6 +102,7 @@ export type Company = {
   outreachStatus: OutreachStatus
   outreachMailboxId: string | null
   outreachStrategy: string | null
+  outreachEmailInstructions: string | null
   outreachNextWakeAt: string | null
   outreachStartedAt: string | null
   outreachLastWorkedAt: string | null
@@ -116,6 +117,7 @@ export type Mailbox = {
   displayName: string | null
   signature: string | null
   senderBio: string | null
+  outreachEmailInstructions: string | null
   scopes: string | null
   status: 'active' | 'revoked'
   hasRefreshToken: boolean

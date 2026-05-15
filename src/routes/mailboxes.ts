@@ -14,7 +14,8 @@ const patchSchema = z
   .object({
     displayName: z.union([z.string().min(1).max(120), z.null()]).optional(),
     signature: z.string().max(4000).optional(),
-    senderBio: z.string().max(4000).optional()
+    senderBio: z.string().max(4000).optional(),
+    outreachEmailInstructions: z.string().max(24_000).nullable().optional()
   })
   .superRefine((data, ctx) => {
     if (data.senderBio !== undefined) {
@@ -107,6 +108,9 @@ mailboxesRoutes.patch('/:id', async (c) => {
       ...(parsed.data.displayName !== undefined ? { displayName: parsed.data.displayName } : {}),
       ...(parsed.data.signature !== undefined ? { signature: parsed.data.signature } : {}),
       ...senderBioPatch,
+      ...(parsed.data.outreachEmailInstructions !== undefined
+        ? { outreachEmailInstructions: parsed.data.outreachEmailInstructions }
+        : {}),
       updatedAt: new Date()
     })
     .where(eq(mailboxes.id, id))

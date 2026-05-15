@@ -100,6 +100,7 @@ const patchOutreachSchema = z.object({
   outreachStatus: z.enum(outreachStatusValues).optional(),
   outreachMailboxId: z.string().uuid().nullable().optional(),
   outreachStrategy: z.string().max(40_000).nullable().optional(),
+  outreachEmailInstructions: z.string().max(24_000).nullable().optional(),
   outreachNextWakeAt: z
     .string()
     .datetime({ offset: true })
@@ -151,6 +152,15 @@ companiesRoutes.patch('/:id/outreach', async (c) => {
   if (patch.outreachStrategy !== undefined) {
     updates.outreachStrategy = patch.outreachStrategy
     // Editing the strategy nudges the agent to wake immediately on the next sweep.
+    if (
+      (patch.outreachStatus ?? existing.outreachStatus) === 'working' &&
+      patch.outreachNextWakeAt === undefined
+    ) {
+      updates.outreachNextWakeAt = new Date()
+    }
+  }
+  if (patch.outreachEmailInstructions !== undefined) {
+    updates.outreachEmailInstructions = patch.outreachEmailInstructions
     if (
       (patch.outreachStatus ?? existing.outreachStatus) === 'working' &&
       patch.outreachNextWakeAt === undefined

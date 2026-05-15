@@ -290,12 +290,16 @@ function DraftDetailPanel({
   const [regenerating, setRegenerating] = useState(false)
   const [showStrategy, setShowStrategy] = useState(false)
   const [showTimeline, setShowTimeline] = useState(true)
+  const [saveInstAccount, setSaveInstAccount] = useState(false)
+  const [saveInstMailbox, setSaveInstMailbox] = useState(false)
 
   useEffect(() => {
     setToEmail(draft.toEmail)
     setSubject(draft.subject)
     setBody(draft.body)
     setReviewNotes('')
+    setSaveInstAccount(false)
+    setSaveInstMailbox(false)
   }, [draft.id, draft.toEmail, draft.subject, draft.body])
 
   const dirty =
@@ -341,9 +345,17 @@ function DraftDetailPanel({
     setDiscarding(true)
     onError(null)
     try {
-      await apiPost('/drafts/' + draft.id + '/discard', {
-        reviewNotes: reviewNotes || null
-      })
+      const res = await apiPost<{ instructionAppend?: { error?: string } }>(
+        '/drafts/' + draft.id + '/discard',
+        {
+          reviewNotes: reviewNotes || undefined,
+          saveInstructionsToAccount: saveInstAccount,
+          saveInstructionsToMailbox: saveInstMailbox
+        }
+      )
+      if (res.instructionAppend?.error) {
+        onError('Could not save standing instructions: ' + res.instructionAppend.error)
+      }
       onChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Discard failed')
@@ -360,7 +372,17 @@ function DraftDetailPanel({
     setRegenerating(true)
     onError(null)
     try {
-      await apiPost('/drafts/' + draft.id + '/regenerate', { reviewNotes })
+      const res = await apiPost<{
+        ok?: boolean
+        instructionAppend?: { error?: string }
+      }>('/drafts/' + draft.id + '/regenerate', {
+        reviewNotes,
+        saveInstructionsToAccount: saveInstAccount,
+        saveInstructionsToMailbox: saveInstMailbox
+      })
+      if (res.instructionAppend?.error) {
+        onError('Could not save standing instructions: ' + res.instructionAppend.error)
+      }
       onChanged()
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Regenerate failed')
@@ -558,6 +580,29 @@ function DraftDetailPanel({
               placeholder="Tell the agent what to do differently: 'too generic', 'lead with the SaaStr connection', 'shorter', etc."
               className="min-h-[80px]"
             />
+            <div className="flex flex-col gap-2 rounded-md border border-line/80 bg-surface-muted/30 px-3 py-2.5">
+              <div className="text-2xs font-medium uppercase tracking-wide text-ink-faint">
+                Save notes as standing instructions
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  className="size-3.5 rounded border-line"
+                  checked={saveInstAccount}
+                  onChange={(e) => setSaveInstAccount(e.target.checked)}
+                />
+                This account only
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  className="size-3.5 rounded border-line"
+                  checked={saveInstMailbox}
+                  onChange={(e) => setSaveInstMailbox(e.target.checked)}
+                />
+                All outreach from this mailbox
+              </label>
+            </div>
             <div className="flex justify-end gap-2">
               <Button
                 variant="outline"
