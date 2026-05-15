@@ -6,21 +6,40 @@ function buildUrl(path: string): string {
   return `/api${p}`
 }
 
+let onUnauthorized: (() => void) | undefined
+
+export function setUnauthorizedHandler(handler: (() => void) | undefined): void {
+  onUnauthorized = handler
+}
+
+export type AuthUser = { id: string; email: string }
+
 async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text()
+  if (res.status === 401) {
+    onUnauthorized?.()
+  }
   if (!res.ok) {
     throw new Error(text || res.statusText)
   }
   return text ? (JSON.parse(text) as T) : ({} as T)
 }
 
+const cred: RequestInit = { credentials: 'include' }
+
+export async function apiAuthMe(): Promise<{ user: AuthUser | null }> {
+  const res = await fetch(buildUrl('/auth/me'), cred)
+  return parseJson<{ user: AuthUser | null }>(res)
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(buildUrl(path))
+  const res = await fetch(buildUrl(path), cred)
   return parseJson<T>(res)
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(buildUrl(path), {
+    ...cred,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body)
@@ -30,6 +49,7 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 
 export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(buildUrl(path), {
+    ...cred,
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body)
@@ -38,7 +58,7 @@ export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  const res = await fetch(buildUrl(path), { method: 'DELETE' })
+  const res = await fetch(buildUrl(path), { ...cred, method: 'DELETE' })
   return parseJson<T>(res)
 }
 

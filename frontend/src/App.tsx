@@ -10,10 +10,21 @@ import {
   Users
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams
+} from 'react-router-dom'
 
 import {
+  apiAuthMe,
   apiGet,
   apiPost,
+  setUnauthorizedHandler,
+  type AuthUser,
   type Campaign,
   type CampaignRun,
   type Company,
@@ -36,7 +47,9 @@ import { DetailDrawer } from '@/pages/DetailDrawer'
 import { DraftsPage } from '@/pages/DraftsPage'
 import { MailboxesPage } from '@/pages/MailboxesPage'
 import { PeoplePage } from '@/pages/PeoplePage'
+import { LoginPage } from '@/pages/LoginPage'
 import { UsagePage } from '@/pages/UsagePage'
+import { emailToInitials } from '@/lib/userDisplay'
 
 type TabId =
   | 'people'
@@ -101,12 +114,83 @@ const headerCopy: Record<TabId, { title: string; description: string }> = {
   }
 }
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('people')
+const TAB_IDS: TabId[] = [
+  'people',
+  'companies',
+  'crawls',
+  'campaigns',
+  'drafts',
+  'mailboxes',
+  'usage'
+]
+
+function isTabId(value: string | undefined): value is TabId {
+  return value !== undefined && (TAB_IDS as readonly string[]).includes(value)
+}
+
+function parseDetailFromSearch(search: URLSearchParams): DetailSelection | null {
+  const kind = search.get('kind')
+  const id = search.get('id')
+  if (!kind || !id) return null
+  if (kind === 'person' || kind === 'company' || kind === 'crawl') {
+    return { type: kind, id }
+  }
+  return null
+}
+
+function NavigateToLogin() {
+  const loc = useLocation()
+  const target = loc.pathname + (loc.search || '')
+  return <Navigate to="/login" replace state={{ from: target || '/' }} />
+}
+
+function HomeRoute({ authUser }: { authUser: AuthUser | null }) {
+  if (authUser) return <Navigate to="/people" replace />
+  return <Navigate to="/login" replace state={{ from: '/' }} />
+}
+
+function ProspectorApp({
+  authUser,
+  setAuthUser
+}: {
+  authUser: AuthUser
+  setAuthUser: React.Dispatch<React.SetStateAction<AuthUser | null>>
+}) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { tab: tabParam } = useParams<{ tab: string }>()
+  const tabValid = isTabId(tabParam)
+  const activeTab: TabId = tabValid ? tabParam : 'people'
+
+  const detail = useMemo(
+    () => parseDetailFromSearch(new URLSearchParams(location.search)),
+    [location.search]
+  )
+
+  const openDetail = useCallback(
+    (sel: DetailSelection | null) => {
+      if (!sel) {
+        navigate({ pathname: location.pathname, search: '' }, { replace: true })
+        return
+      }
+      const sp = new URLSearchParams(location.search)
+      sp.set('kind', sel.type)
+      sp.set('id', sel.id)
+      navigate({ pathname: location.pathname, search: sp.toString() })
+    },
+    [navigate, location.pathname, location.search]
+  )
+
+  const goToTab = useCallback(
+    (id: TabId) => {
+      navigate({ pathname: '/' + id, search: location.search })
+    },
+    [navigate, location.search]
+  )
+
   const [crawls, setCrawls] = useState<Campaign[]>([])
   const [companies, setCompanies] = useState<Company[]>([])
   const [people, setPeople] = useState<Person[]>([])
-  const [detail, setDetail] = useState<DetailSelection | null>(null)
   const [peopleHasMore, setPeopleHasMore] = useState(true)
   const [companiesHasMore, setCompaniesHasMore] = useState(true)
   const [crawlsLoading, setCrawlsLoading] = useState(true)
@@ -225,6 +309,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!authUser) return
     let cancelled = false
     ;(async () => {
       setCrawlsLoading(true)
@@ -245,7 +330,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [loadCompanies, loadCrawls, loadPeople, loadMailboxes, loadPendingDrafts])
+  }, [authUser, loadCompanies, loadCrawls, loadPeople, loadMailboxes, loadPendingDrafts])
 
   async function runCompanyOutreach(companyId: string) {
     setRunningId(companyId)
@@ -268,7 +353,7 @@ export default function App() {
     try {
       await apiPost<Campaign>('/campaigns', { name, icpDocument, targetCount })
       await loadCrawls()
-      setActiveTab('crawls')
+      goToTab('crawls')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Create crawl failed')
     } finally {
@@ -338,6 +423,7 @@ export default function App() {
 
   useEffect(() => {
     if (detail?.type !== 'crawl') return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadCrawlRuns(detail.id)
   }, [detail, loadCrawlRuns])
 
@@ -350,12 +436,12 @@ export default function App() {
         return
       }
       if (e.key === 'Escape' && !paletteOpen && detail) {
-        setDetail(null)
+        openDetail(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [paletteOpen, detail])
+  }, [paletteOpen, detail, openDetail])
 
   const paletteCommands = useMemo<CommandItem[]>(() => {
     const navItems: CommandItem[] = [
@@ -365,7 +451,7 @@ export default function App() {
         group: 'Jump to',
         icon: Users,
         keywords: 'prospects contacts',
-        onSelect: () => setActiveTab('people')
+        onSelect: () => goToTab('people')
       },
       {
         id: 'nav:companies',
@@ -373,7 +459,7 @@ export default function App() {
         group: 'Jump to',
         icon: Building2,
         keywords: 'accounts',
-        onSelect: () => setActiveTab('companies')
+        onSelect: () => goToTab('companies')
       },
       {
         id: 'nav:crawls',
@@ -381,7 +467,7 @@ export default function App() {
         group: 'Jump to',
         icon: Search,
         keywords: 'jobs workflows research',
-        onSelect: () => setActiveTab('crawls')
+        onSelect: () => goToTab('crawls')
       },
       {
         id: 'nav:campaigns',
@@ -389,7 +475,7 @@ export default function App() {
         group: 'Jump to',
         icon: Mail,
         keywords: 'outreach emails working accounts',
-        onSelect: () => setActiveTab('campaigns')
+        onSelect: () => goToTab('campaigns')
       },
       {
         id: 'nav:drafts',
@@ -397,7 +483,7 @@ export default function App() {
         group: 'Jump to',
         icon: Inbox,
         keywords: 'review approve outreach pending',
-        onSelect: () => setActiveTab('drafts')
+        onSelect: () => goToTab('drafts')
       },
       {
         id: 'nav:mailboxes',
@@ -405,7 +491,7 @@ export default function App() {
         group: 'Jump to',
         icon: Plug,
         keywords: 'gmail connect oauth inbox',
-        onSelect: () => setActiveTab('mailboxes')
+        onSelect: () => goToTab('mailboxes')
       },
       {
         id: 'nav:usage',
@@ -413,7 +499,7 @@ export default function App() {
         group: 'Jump to',
         icon: Activity,
         keywords: 'spend cost tokens billing',
-        onSelect: () => setActiveTab('usage')
+        onSelect: () => goToTab('usage')
       }
     ]
 
@@ -429,7 +515,7 @@ export default function App() {
         keywords: [p.email, p.title, company?.name, company?.domain]
           .filter(Boolean)
           .join(' '),
-        onSelect: () => setDetail({ type: 'person', id: p.id })
+        onSelect: () => openDetail({ type: 'person', id: p.id })
       }
     })
 
@@ -440,7 +526,7 @@ export default function App() {
       group: 'Companies',
       icon: Building2,
       keywords: [c.domain, c.website, c.industry, c.hqLocation].filter(Boolean).join(' '),
-      onSelect: () => setDetail({ type: 'company', id: c.id })
+      onSelect: () => openDetail({ type: 'company', id: c.id })
     }))
 
     const crawlItems: CommandItem[] = crawls.map((c) => ({
@@ -450,11 +536,11 @@ export default function App() {
       group: 'Crawls',
       icon: Search,
       keywords: c.status,
-      onSelect: () => setDetail({ type: 'crawl', id: c.id })
+      onSelect: () => openDetail({ type: 'crawl', id: c.id })
     }))
 
     return [...navItems, ...crawlItems, ...companyItems, ...peopleItems]
-  }, [people, companies, crawls, companyById])
+  }, [people, companies, crawls, companyById, goToTab, openDetail])
 
   function loadMorePeople() {
     if (!peopleLoading && peopleHasMore) void loadPeople(people.length)
@@ -486,7 +572,7 @@ export default function App() {
               variant="primary"
               size="md"
               iconLeft={Plus}
-              onClick={() => setActiveTab('crawls')}
+              onClick={() => goToTab('crawls')}
             >
               New crawl
             </Button>
@@ -550,12 +636,27 @@ export default function App() {
     }
   })()
 
+  async function handleSignOut() {
+    try {
+      await apiPost('/auth/logout')
+    } catch {
+      // still sign out locally
+    }
+    setAuthUser(null)
+  }
+
+  if (!tabValid) {
+    return <Navigate to="/people" replace />
+  }
+
   return (
     <AppShell
       sections={sections}
       activeId={activeTab}
-      onSelect={setActiveTab}
+      onSelect={goToTab}
       onOpenSearch={() => setPaletteOpen(true)}
+      userInitials={emailToInitials(authUser.email)}
+      onSignOut={() => void handleSignOut()}
       sidebarFooter={
         <div className="text-2xs leading-relaxed text-ink-faint">
           <div className="font-medium text-ink-muted">v0.1 - preview</div>
@@ -588,8 +689,8 @@ export default function App() {
           hasMore={peopleHasMore}
           onRefresh={() => void loadPeople(0)}
           onLoadMore={loadMorePeople}
-          onSelectPerson={(person) => setDetail({ type: 'person', id: person.id })}
-          onSelectCompany={(companyId) => setDetail({ type: 'company', id: companyId })}
+          onSelectPerson={(person) => openDetail({ type: 'person', id: person.id })}
+          onSelectCompany={(companyId) => openDetail({ type: 'company', id: companyId })}
           selectedKey={selectedKey}
         />
       ) : null}
@@ -607,7 +708,7 @@ export default function App() {
             void loadPendingDrafts()
           }}
           onLoadMore={loadMoreCompanies}
-          onSelectCompany={(company) => setDetail({ type: 'company', id: company.id })}
+          onSelectCompany={(company) => openDetail({ type: 'company', id: company.id })}
           selectedKey={selectedKey}
           onError={(msg) => setError(msg)}
         />
@@ -628,7 +729,7 @@ export default function App() {
           onCreate={handleCreate}
           onRun={startRun}
           onRefresh={() => void loadCrawls()}
-          onSelectCrawl={(crawl) => setDetail({ type: 'crawl', id: crawl.id })}
+          onSelectCrawl={(crawl) => openDetail({ type: 'crawl', id: crawl.id })}
           selectedKey={selectedKey}
         />
       ) : null}
@@ -643,9 +744,9 @@ export default function App() {
             void loadCompanies(0)
             void loadPendingDrafts()
           }}
-          onSelectCompany={(company) => setDetail({ type: 'company', id: company.id })}
-          onGoToDrafts={() => setActiveTab('drafts')}
-          onGoToCompanies={() => setActiveTab('companies')}
+          onSelectCompany={(company) => openDetail({ type: 'company', id: company.id })}
+          onGoToDrafts={() => goToTab('drafts')}
+          onGoToCompanies={() => goToTab('companies')}
           onRunCompany={(id) => void runCompanyOutreach(id)}
           runningId={runningId}
           selectedKey={selectedKey}
@@ -667,16 +768,16 @@ export default function App() {
           crawls={crawls}
           companyById={companyById}
           personById={personById}
-          onSelectCrawl={(crawl) => setDetail({ type: 'crawl', id: crawl.id })}
-          onSelectCompany={(companyId) => setDetail({ type: 'company', id: companyId })}
-          onSelectPerson={(person) => setDetail({ type: 'person', id: person.id })}
+          onSelectCrawl={(crawl) => openDetail({ type: 'crawl', id: crawl.id })}
+          onSelectCompany={(companyId) => openDetail({ type: 'company', id: companyId })}
+          onSelectPerson={(person) => openDetail({ type: 'person', id: person.id })}
         />
       ) : null}
 
       <DetailDrawer
         open={drawerOpen}
         onOpenChange={(open) => {
-          if (!open) setDetail(null)
+          if (!open) openDetail(null)
         }}
         person={selectedPerson}
         company={selectedCompany}
@@ -688,8 +789,8 @@ export default function App() {
         crawlUsage={selectedCrawlUsage}
         runningId={runningId}
         mailboxes={mailboxes}
-        onSelectPerson={(person) => setDetail({ type: 'person', id: person.id })}
-        onSelectCompany={(companyId) => setDetail({ type: 'company', id: companyId })}
+        onSelectPerson={(person) => openDetail({ type: 'person', id: person.id })}
+        onSelectCompany={(companyId) => openDetail({ type: 'company', id: companyId })}
         onRunCrawl={startRun}
         onCompanyChanged={() => {
           void loadCompanies(0)
@@ -704,5 +805,70 @@ export default function App() {
         commands={paletteCommands}
       />
     </AppShell>
+  )
+}
+
+export default function App() {
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthUser(null)
+    })
+    return () => {
+      setUnauthorizedHandler(undefined)
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { user } = await apiAuthMe()
+        if (!cancelled) setAuthUser(user)
+      } catch {
+        if (!cancelled) setAuthUser(null)
+      } finally {
+        if (!cancelled) setAuthChecked(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (!authChecked) {
+    return (
+      <div className="flex h-svh items-center justify-center bg-bg text-sm text-ink-muted">
+        Loading…
+      </div>
+    )
+  }
+
+  return (
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          authUser ? <Navigate to="/people" replace /> : <LoginPage onAuthed={setAuthUser} />
+        }
+      />
+      <Route path="/" element={<HomeRoute authUser={authUser} />} />
+      <Route
+        path="/:tab"
+        element={
+          authUser ? (
+            <ProspectorApp authUser={authUser} setAuthUser={setAuthUser} />
+          ) : (
+            <NavigateToLogin />
+          )
+        }
+      />
+      <Route
+        path="*"
+        element={authUser ? <Navigate to="/people" replace /> : <NavigateToLogin />}
+      />
+    </Routes>
   )
 }

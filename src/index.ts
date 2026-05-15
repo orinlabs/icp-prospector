@@ -8,6 +8,8 @@ import { cors } from 'hono/cors'
 import path from 'node:path'
 
 import { db, pool } from './db/client.js'
+import { isAuthPublicApiPath } from './lib/authPaths.js'
+import { authRoutes, sessionUserFromRequest } from './routes/auth.js'
 import { campaignsRoutes } from './routes/campaigns.js'
 import { companiesRoutes } from './routes/companies.js'
 import { draftsRoutes } from './routes/drafts.js'
@@ -15,9 +17,44 @@ import { mailboxesRoutes } from './routes/mailboxes.js'
 import { peopleRoutes } from './routes/people.js'
 import { usageRoutes } from './routes/usage.js'
 
-const app = new Hono()
+type AppVariables = {
+  user: { id: string; email: string }
+}
 
-app.use('*', cors())
+const app = new Hono<{ Variables: AppVariables }>()
+
+const allowedOrigins = (
+  process.env.AUTH_ALLOWED_ORIGINS ?? 'http://localhost:5173,http://127.0.0.1:5173'
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+app.use(
+  '*',
+  cors({
+    origin: (origin) => {
+      if (!origin) {
+        return allowedOrigins[0] ?? true
+      }
+      return allowedOrigins.includes(origin) ? origin : null
+    },
+    credentials: true
+  })
+)
+
+app.use('*', async (c, next) => {
+  if (isAuthPublicApiPath(c.req.path)) {
+    await next()
+    return
+  }
+  const row = await sessionUserFromRequest(c)
+  if (!row) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  c.set('user', { id: row.userId, email: row.email })
+  await next()
+})
 
 app.get('/health', (c) => c.json({ ok: true, service: 'icp-prospector-api' }))
 
@@ -34,6 +71,7 @@ app.get('/ready', async (c) => {
   }
 })
 
+app.route('/auth', authRoutes)
 app.route('/campaigns', campaignsRoutes)
 app.route('/companies', companiesRoutes)
 app.route('/drafts', draftsRoutes)

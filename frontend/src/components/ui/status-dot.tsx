@@ -20,6 +20,16 @@ const toneRing: Record<StatusTone, string> = {
   accent: 'ring-accent/15'
 }
 
+/** Statuses that show a soft pulse (in-flight / waiting attention). */
+const PULSE_STATUSES = new Set([
+  'pending',
+  'queued',
+  'running',
+  'in_progress',
+  'working',
+  'pending_review'
+])
+
 const STATUS_MAP: Record<string, { tone: StatusTone; label?: string }> = {
   // Crawl / campaign statuses
   draft: { tone: 'neutral' },
@@ -63,6 +73,7 @@ export interface StatusDotProps {
   status?: string
   label?: React.ReactNode
   className?: string
+  /** When omitted, pulse is on for in-flight statuses (see PULSE_STATUSES). */
   pulse?: boolean
   size?: 'sm' | 'md'
 }
@@ -85,6 +96,10 @@ export function StatusDot({
     resolvedLabel = status
   }
 
+  const normalizedStatus = status?.toLowerCase?.() ?? ''
+  const shouldPulse =
+    pulse !== undefined ? pulse : Boolean(status && PULSE_STATUSES.has(normalizedStatus))
+
   const dotSize = size === 'sm' ? 'h-1.5 w-1.5' : 'h-2 w-2'
   return (
     <span className={cn('inline-flex items-center gap-2 text-sm text-ink', className)}>
@@ -94,17 +109,10 @@ export function StatusDot({
             'inline-block rounded-full ring-4',
             dotSize,
             toneClass[resolvedTone],
-            toneRing[resolvedTone]
+            toneRing[resolvedTone],
+            shouldPulse && 'animate-statusDotPulse'
           )}
         />
-        {pulse ? (
-          <span
-            className={cn(
-              'absolute inset-0 inline-flex animate-ping rounded-full opacity-60',
-              toneClass[resolvedTone]
-            )}
-          />
-        ) : null}
       </span>
       {resolvedLabel ? (
         <span className="capitalize text-[13px] text-ink">{resolvedLabel}</span>

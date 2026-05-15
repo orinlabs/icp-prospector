@@ -9,6 +9,8 @@ interface AppShellProps<TId extends string> {
   onSelect: (id: TId) => void
   sidebarFooter?: React.ReactNode
   onOpenSearch?: () => void
+  userInitials?: string
+  onSignOut?: () => void
   children: React.ReactNode
 }
 
@@ -18,6 +20,8 @@ export function AppShell<TId extends string>({
   onSelect,
   sidebarFooter,
   onOpenSearch,
+  userInitials,
+  onSignOut,
   children
 }: AppShellProps<TId>) {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -39,6 +43,8 @@ export function AppShell<TId extends string>({
         theme={theme}
         onThemeToggle={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         onOpenSearch={onOpenSearch}
+        userInitials={userInitials}
+        onSignOut={onSignOut}
       />
       <div className="flex min-h-0 flex-1">
         <Sidebar

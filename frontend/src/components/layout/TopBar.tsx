@@ -9,13 +9,15 @@ interface TopBarProps {
   theme?: 'light' | 'dark'
   onThemeToggle?: () => void
   onOpenSearch?: () => void
+  onSignOut?: () => void
 }
 
 export function TopBar({
   userInitials = 'BH',
   theme = 'light',
   onThemeToggle,
-  onOpenSearch
+  onOpenSearch,
+  onSignOut
 }: TopBarProps) {
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-bg px-4">
@@ -26,6 +28,11 @@ export function TopBar({
       </div>
 
       <div className="flex items-center gap-1">
+        {onSignOut ? (
+          <Button variant="ghost" size="sm" className="text-ink-muted" onClick={onSignOut}>
+            Sign out
+          </Button>
+        ) : null}
         {onThemeToggle ? (
           <Button
             variant="ghost"

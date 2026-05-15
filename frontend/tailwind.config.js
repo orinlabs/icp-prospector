@@ -125,13 +125,18 @@ export default {
         drawerOut: {
           from: { transform: 'translateX(0)' },
           to: { transform: 'translateX(100%)' }
+        },
+        statusDotPulse: {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.62' }
         }
       },
       animation: {
         overlayIn: 'overlayIn 160ms ease-out',
         overlayOut: 'overlayOut 140ms ease-in',
         drawerIn: 'drawerIn 220ms cubic-bezier(0.22, 0.61, 0.36, 1)',
-        drawerOut: 'drawerOut 180ms cubic-bezier(0.4, 0, 1, 1)'
+        drawerOut: 'drawerOut 180ms cubic-bezier(0.4, 0, 1, 1)',
+        statusDotPulse: 'statusDotPulse 2.2s ease-in-out infinite'
       },
       transitionDuration: {
         120: '120ms'
