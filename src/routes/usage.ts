@@ -10,8 +10,9 @@ import {
   people,
   usageEvents
 } from '../db/schema.js'
+import type { AppVariables } from '../lib/orgs.js'
 
-export const usageRoutes = new Hono()
+export const usageRoutes = new Hono<{ Variables: AppVariables }>()
 
 const totalsSelect = {
   events: sql<number>`count(*)::int`.as('events'),
@@ -42,13 +43,15 @@ function buildSinceFilter(days: number | null): SQL | undefined {
 }
 
 usageRoutes.get('/summary', async (c) => {
+  const organizationId = c.get('organization').id
   const days = parseDays(c.req.query('days') ?? undefined)
   const sinceFilter = buildSinceFilter(days)
+  const orgFilter = eq(usageEvents.organizationId, organizationId)
 
   const [overall] = await db
     .select(totalsSelect)
     .from(usageEvents)
-    .where(sinceFilter)
+    .where(and(orgFilter, sinceFilter))
 
   const byProvider = await db
     .select({
@@ -57,7 +60,7 @@ usageRoutes.get('/summary', async (c) => {
       ...totalsSelect
     })
     .from(usageEvents)
-    .where(sinceFilter)
+    .where(and(orgFilter, sinceFilter))
     .groupBy(usageEvents.provider, usageEvents.operation)
     .orderBy(desc(sql`coalesce(sum(${usageEvents.costUsd}), 0)`))
 
@@ -67,7 +70,7 @@ usageRoutes.get('/summary', async (c) => {
       ...totalsSelect
     })
     .from(usageEvents)
-    .where(and(sinceFilter, eq(usageEvents.provider, 'openrouter')))
+    .where(and(orgFilter, sinceFilter, eq(usageEvents.provider, 'openrouter')))
     .groupBy(usageEvents.model)
     .orderBy(desc(sql`coalesce(sum(${usageEvents.costUsd}), 0)`))
 
@@ -80,6 +83,7 @@ usageRoutes.get('/summary', async (c) => {
 })
 
 usageRoutes.get('/by-campaign', async (c) => {
+  const organizationId = c.get('organization').id
   const days = parseDays(c.req.query('days') ?? undefined)
   const sinceFilter = buildSinceFilter(days)
 
@@ -92,7 +96,7 @@ usageRoutes.get('/by-campaign', async (c) => {
     })
     .from(usageEvents)
     .leftJoin(campaigns, eq(campaigns.id, usageEvents.campaignId))
-    .where(sinceFilter)
+    .where(and(eq(usageEvents.organizationId, organizationId), sinceFilter))
     .groupBy(usageEvents.campaignId, campaigns.name, campaigns.status)
     .orderBy(desc(sql`coalesce(sum(${usageEvents.costUsd}), 0)`))
 
@@ -100,11 +104,12 @@ usageRoutes.get('/by-campaign', async (c) => {
 })
 
 usageRoutes.get('/by-run', async (c) => {
+  const organizationId = c.get('organization').id
   const days = parseDays(c.req.query('days') ?? undefined)
   const sinceFilter = buildSinceFilter(days)
   const campaignId = c.req.query('campaign_id')
 
-  const filters: SQL[] = []
+  const filters: SQL[] = [eq(usageEvents.organizationId, organizationId)]
   if (sinceFilter) filters.push(sinceFilter)
   if (campaignId) filters.push(eq(usageEvents.campaignId, campaignId))
   const where = filters.length > 0 ? and(...filters) : undefined
@@ -137,6 +142,7 @@ usageRoutes.get('/by-run', async (c) => {
 })
 
 usageRoutes.get('/by-company', async (c) => {
+  const organizationId = c.get('organization').id
   const days = parseDays(c.req.query('days') ?? undefined)
   const sinceFilter = buildSinceFilter(days)
 
@@ -149,7 +155,7 @@ usageRoutes.get('/by-company', async (c) => {
     })
     .from(usageEvents)
     .leftJoin(companies, eq(companies.id, usageEvents.companyId))
-    .where(sinceFilter)
+    .where(and(eq(usageEvents.organizationId, organizationId), sinceFilter))
     .groupBy(usageEvents.companyId, companies.name, companies.domain)
     .orderBy(desc(sql`coalesce(sum(${usageEvents.costUsd}), 0)`))
 
@@ -157,6 +163,7 @@ usageRoutes.get('/by-company', async (c) => {
 })
 
 usageRoutes.get('/by-person', async (c) => {
+  const organizationId = c.get('organization').id
   const days = parseDays(c.req.query('days') ?? undefined)
   const sinceFilter = buildSinceFilter(days)
 
@@ -172,7 +179,7 @@ usageRoutes.get('/by-person', async (c) => {
     .from(usageEvents)
     .leftJoin(people, eq(people.id, usageEvents.personId))
     .leftJoin(companies, eq(companies.id, people.companyId))
-    .where(sinceFilter)
+    .where(and(eq(usageEvents.organizationId, organizationId), sinceFilter))
     .groupBy(
       usageEvents.personId,
       people.fullName,
@@ -196,6 +203,7 @@ const recentSchema = z.object({
 })
 
 usageRoutes.get('/recent', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = recentSchema.safeParse({
     campaign_id: c.req.query('campaign_id') ?? undefined,
     campaign_run_id: c.req.query('campaign_run_id') ?? undefined,
@@ -211,7 +219,7 @@ usageRoutes.get('/recent', async (c) => {
   const { campaign_id, campaign_run_id, company_id, person_id, provider, days, limit } =
     parsed.data
 
-  const filters: SQL[] = []
+  const filters: SQL[] = [eq(usageEvents.organizationId, organizationId)]
   const sinceFilter = buildSinceFilter(days ?? null)
   if (sinceFilter) filters.push(sinceFilter)
   if (campaign_id) filters.push(eq(usageEvents.campaignId, campaign_id))

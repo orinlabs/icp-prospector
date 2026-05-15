@@ -7,6 +7,8 @@ import { cn } from '@/lib/utils'
 interface TopBarProps {
   userInitials?: string
   theme?: 'light' | 'dark'
+  organizationName?: string
+  organizationDomain?: string
   onThemeToggle?: () => void
   onOpenSearch?: () => void
   onSignOut?: () => void
@@ -15,6 +17,8 @@ interface TopBarProps {
 export function TopBar({
   userInitials = 'BH',
   theme = 'light',
+  organizationName,
+  organizationDomain,
   onThemeToggle,
   onOpenSearch,
   onSignOut
@@ -28,6 +32,14 @@ export function TopBar({
       </div>
 
       <div className="flex items-center gap-1">
+        {organizationName ? (
+          <div className="mr-2 hidden text-right leading-tight sm:block">
+            <div className="text-xs font-medium text-ink">{organizationName}</div>
+            {organizationDomain ? (
+              <div className="text-2xs text-ink-faint">{organizationDomain}</div>
+            ) : null}
+          </div>
+        ) : null}
         {onSignOut ? (
           <Button variant="ghost" size="sm" className="text-ink-muted" onClick={onSignOut}>
             Sign out

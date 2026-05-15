@@ -7,13 +7,20 @@ import { z } from 'zod'
 import { db } from '../db/client.js'
 import { appSessions, appUsers, emailLoginChallenges } from '../db/schema.js'
 import {
-  assertOrinlabsEmail,
+  assertValidAppEmail,
   normalizeAppEmail,
   randomLoginCode,
   randomSessionToken,
   secureCompareHex,
   sha256Hex
 } from '../lib/authApp.js'
+import {
+  chooseActiveOrganization,
+  emailDomain,
+  hasClaimedDomain,
+  listActiveMemberships,
+  setSessionActiveOrganization
+} from '../lib/orgs.js'
 import { sendOrinlabsLoginCode } from '../lib/sendLoginCodeEmail.js'
 
 export const SESSION_COOKIE_NAME = 'flash_session'
@@ -85,7 +92,23 @@ authRoutes.get('/me', async (c) => {
   if (!row) {
     return c.json({ user: null })
   }
-  return c.json({ user: { id: row.userId, email: row.email } })
+  const memberships = await listActiveMemberships(row.userId)
+  const activeOrganization = chooseActiveOrganization(memberships, row.activeOrganizationId)
+  const domain = emailDomain(row.email)
+  const domainClaimed = domain ? await hasClaimedDomain(domain) : false
+  if (activeOrganization?.id !== row.activeOrganizationId) {
+    await setSessionActiveOrganization(c, activeOrganization?.id ?? null)
+  }
+  return c.json({
+    user: { id: row.userId, email: row.email },
+    organizations: memberships.map((membership) => ({
+      ...membership.organization,
+      role: membership.role
+    })),
+    activeOrganization,
+    domainClaimed,
+    needsOrganizationSetup: memberships.length === 0 && !domainClaimed
+  })
 })
 
 authRoutes.post('/request-code', async (c) => {
@@ -95,7 +118,7 @@ authRoutes.post('/request-code', async (c) => {
   }
   let email: string
   try {
-    assertOrinlabsEmail(parsed.data.email)
+    assertValidAppEmail(parsed.data.email)
     email = normalizeAppEmail(parsed.data.email)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Invalid email'
@@ -141,7 +164,7 @@ authRoutes.post('/verify-code', async (c) => {
   }
   let email: string
   try {
-    assertOrinlabsEmail(parsed.data.email)
+    assertValidAppEmail(parsed.data.email)
     email = normalizeAppEmail(parsed.data.email)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Invalid email'
@@ -177,15 +200,30 @@ authRoutes.post('/verify-code', async (c) => {
   const tokenHash = sha256Hex(rawToken)
   const sessionExpires = new Date(Date.now() + sessionTtlMs())
 
+  const memberships = await listActiveMemberships(user.id)
+  const activeOrganization = chooseActiveOrganization(memberships)
+  const domain = emailDomain(user.email)
+  const domainClaimed = domain ? await hasClaimedDomain(domain) : false
+
   await db.insert(appSessions).values({
     userId: user.id,
     tokenHash,
+    activeOrganizationId: activeOrganization?.id,
     expiresAt: sessionExpires
   })
 
   setCookie(c, SESSION_COOKIE_NAME, rawToken, cookieBaseOptions())
 
-  return c.json({ user: { id: user.id, email: user.email } })
+  return c.json({
+    user: { id: user.id, email: user.email },
+    organizations: memberships.map((membership) => ({
+      ...membership.organization,
+      role: membership.role
+    })),
+    activeOrganization,
+    domainClaimed,
+    needsOrganizationSetup: memberships.length === 0 && !domainClaimed
+  })
 })
 
 authRoutes.post('/logout', async (c) => {
@@ -199,7 +237,7 @@ authRoutes.post('/logout', async (c) => {
 
 export async function sessionUserFromRequest(
   c: Context
-): Promise<{ userId: string; email: string } | null> {
+): Promise<{ userId: string; email: string; activeOrganizationId: string | null } | null> {
   const token = getCookie(c, SESSION_COOKIE_NAME)
   if (!token) return null
   const tokenHash = sha256Hex(token)
@@ -208,6 +246,7 @@ export async function sessionUserFromRequest(
     .select({
       userId: appUsers.id,
       email: appUsers.email,
+      activeOrganizationId: appSessions.activeOrganizationId,
       expiresAt: appSessions.expiresAt
     })
     .from(appSessions)
@@ -217,5 +256,5 @@ export async function sessionUserFromRequest(
   if (!row || row.expiresAt.getTime() <= now.getTime()) {
     return null
   }
-  return { userId: row.userId, email: row.email }
+  return { userId: row.userId, email: row.email, activeOrganizationId: row.activeOrganizationId }
 }

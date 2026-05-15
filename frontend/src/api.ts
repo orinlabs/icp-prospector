@@ -12,7 +12,27 @@ export function setUnauthorizedHandler(handler: (() => void) | undefined): void 
   onUnauthorized = handler
 }
 
+export type Organization = {
+  id: string
+  name: string
+  slug: string
+  emailDomain: string
+  role?: string
+}
+
 export type AuthUser = { id: string; email: string }
+
+export type AuthSession = {
+  user: AuthUser
+  organizations: Organization[]
+  activeOrganization: Organization | null
+  domainClaimed?: boolean
+  needsOrganizationSetup: boolean
+}
+
+export type AuthMeResponse =
+  | ({ user: null } & Partial<Omit<AuthSession, 'user'>>)
+  | AuthSession
 
 async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text()
@@ -27,9 +47,9 @@ async function parseJson<T>(res: Response): Promise<T> {
 
 const cred: RequestInit = { credentials: 'include' }
 
-export async function apiAuthMe(): Promise<{ user: AuthUser | null }> {
+export async function apiAuthMe(): Promise<AuthMeResponse> {
   const res = await fetch(buildUrl('/auth/me'), cred)
-  return parseJson<{ user: AuthUser | null }>(res)
+  return parseJson<AuthMeResponse>(res)
 }
 
 export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {

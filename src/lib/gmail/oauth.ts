@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 
 import { db } from '../../db/client.js'
 import { mailboxes, type Mailbox } from '../../db/schema.js'
@@ -49,7 +49,7 @@ export function buildConsentUrl(state: string): string {
     prompt: 'consent',
     state
   })
-  return `${AUTH_URL}?${params.toString()}`
+  return AUTH_URL + '?' + params.toString()
 }
 
 type TokenResponse = {
@@ -103,7 +103,10 @@ export type ConnectMailboxResult = {
  * Exchange the OAuth callback code, fetch the user's email, and upsert
  * the mailbox row by lower(email). Returns the persisted row.
  */
-export async function connectMailboxFromCode(code: string): Promise<ConnectMailboxResult> {
+export async function connectMailboxFromCode(
+  code: string,
+  organizationId: string
+): Promise<ConnectMailboxResult> {
   const tokens = await exchangeCodeForTokens(code)
   if (!tokens.refresh_token) {
     throw new Error(
@@ -119,7 +122,12 @@ export async function connectMailboxFromCode(code: string): Promise<ConnectMailb
   const [existing] = await db
     .select()
     .from(mailboxes)
-    .where(sql`lower(${mailboxes.email}) = ${info.email.toLowerCase()}`)
+    .where(
+      and(
+        eq(mailboxes.organizationId, organizationId),
+        sql`lower(${mailboxes.email}) = ${info.email.toLowerCase()}`
+      )
+    )
     .limit(1)
 
   if (existing) {
@@ -143,6 +151,7 @@ export async function connectMailboxFromCode(code: string): Promise<ConnectMailb
     .insert(mailboxes)
     .values({
       email: info.email,
+      organizationId,
       displayName: info.name ?? null,
       oauthRefreshToken: tokens.refresh_token,
       oauthAccessToken: tokens.access_token,

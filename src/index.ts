@@ -8,19 +8,22 @@ import { cors } from 'hono/cors'
 import path from 'node:path'
 
 import { db, pool } from './db/client.js'
-import { isAuthPublicApiPath } from './lib/authPaths.js'
+import { isAuthPublicApiPath, isOrganizationSetupApiPath } from './lib/authPaths.js'
+import {
+  chooseActiveOrganization,
+  listActiveMemberships,
+  setSessionActiveOrganization,
+  type AppVariables
+} from './lib/orgs.js'
 import { authRoutes, sessionUserFromRequest } from './routes/auth.js'
 import { campaignsRoutes } from './routes/campaigns.js'
 import { companiesRoutes } from './routes/companies.js'
 import { draftsRoutes } from './routes/drafts.js'
 import { listsRoutes } from './routes/lists.js'
 import { mailboxesRoutes } from './routes/mailboxes.js'
+import { organizationsRoutes } from './routes/organizations.js'
 import { peopleRoutes } from './routes/people.js'
 import { usageRoutes } from './routes/usage.js'
-
-type AppVariables = {
-  user: { id: string; email: string }
-}
 
 const app = new Hono<{ Variables: AppVariables }>()
 
@@ -54,6 +57,20 @@ app.use('*', async (c, next) => {
     return c.json({ error: 'unauthorized' }, 401)
   }
   c.set('user', { id: row.userId, email: row.email })
+  const memberships = await listActiveMemberships(row.userId)
+  c.set('memberships', memberships)
+  const activeOrganization = chooseActiveOrganization(memberships, row.activeOrganizationId)
+  if (activeOrganization?.id !== row.activeOrganizationId) {
+    await setSessionActiveOrganization(c, activeOrganization?.id ?? null)
+  }
+  if (!activeOrganization) {
+    if (isOrganizationSetupApiPath(c.req.path)) {
+      await next()
+      return
+    }
+    return c.json({ error: 'organization_required' }, 403)
+  }
+  c.set('organization', activeOrganization)
   await next()
 })
 
@@ -78,6 +95,7 @@ app.route('/companies', companiesRoutes)
 app.route('/drafts', draftsRoutes)
 app.route('/lists', listsRoutes)
 app.route('/mailboxes', mailboxesRoutes)
+app.route('/organizations', organizationsRoutes)
 app.route('/people', peopleRoutes)
 app.route('/usage', usageRoutes)
 

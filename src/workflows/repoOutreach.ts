@@ -29,29 +29,36 @@ export type CompanyWithMailbox = Company & {
 }
 
 export async function getCompanyForOutreach(
-  companyId: string
+  companyId: string,
+  organizationId?: string
 ): Promise<CompanyWithMailbox | null> {
   const [row] = await db
     .select({ company: companies, mailbox: mailboxes })
     .from(companies)
     .leftJoin(mailboxes, eq(mailboxes.id, companies.outreachMailboxId))
-    .where(eq(companies.id, companyId))
+    .where(
+      organizationId
+        ? and(eq(companies.id, companyId), eq(companies.organizationId, organizationId))
+        : eq(companies.id, companyId)
+    )
     .limit(1)
   if (!row) return null
   return { ...row.company, mailbox: row.mailbox ?? null }
 }
 
-export async function listDueCompanyIds(limit = 50): Promise<string[]> {
+export async function listDueCompanyIds(organizationId: string | null = null, limit = 50): Promise<string[]> {
+  const filters = [
+    eq(companies.outreachStatus, 'working'),
+    isNotNull(companies.outreachMailboxId),
+    isNotNull(companies.outreachNextWakeAt),
+    lte(companies.outreachNextWakeAt, new Date())
+  ]
+  if (organizationId) filters.unshift(eq(companies.organizationId, organizationId))
   const rows = await db
     .select({ id: companies.id })
     .from(companies)
     .where(
-      and(
-        eq(companies.outreachStatus, 'working'),
-        isNotNull(companies.outreachMailboxId),
-        isNotNull(companies.outreachNextWakeAt),
-        lte(companies.outreachNextWakeAt, new Date())
-      )
+      and(...filters)
     )
     .orderBy(companies.outreachNextWakeAt)
     .limit(limit)
@@ -59,6 +66,7 @@ export async function listDueCompanyIds(limit = 50): Promise<string[]> {
 }
 
 export type AppendEventInput = {
+  organizationId: string
   companyId: string
   kind: string
   summary: string
@@ -71,6 +79,7 @@ export async function appendOutreachEvent(input: AppendEventInput): Promise<Outr
     .insert(outreachEvents)
     .values({
       companyId: input.companyId,
+      organizationId: input.organizationId,
       kind: input.kind,
       summary: input.summary,
       details: input.details ?? undefined,
@@ -82,18 +91,20 @@ export async function appendOutreachEvent(input: AppendEventInput): Promise<Outr
 
 export async function listRecentOutreachEvents(
   companyId: string,
+  organizationId: string,
   limit = 20
 ): Promise<OutreachEvent[]> {
   return db
     .select()
     .from(outreachEvents)
-    .where(eq(outreachEvents.companyId, companyId))
+    .where(and(eq(outreachEvents.companyId, companyId), eq(outreachEvents.organizationId, organizationId)))
     .orderBy(desc(outreachEvents.createdAt))
     .limit(limit)
 }
 
 export async function writeStrategy(
   companyId: string,
+  organizationId: string,
   text: string,
   reason: string | null
 ): Promise<void> {
@@ -103,8 +114,9 @@ export async function writeStrategy(
       outreachStrategy: text,
       updatedAt: new Date()
     })
-    .where(eq(companies.id, companyId))
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
   await appendOutreachEvent({
+    organizationId,
     companyId,
     kind: 'strategy_revision',
     summary: reason?.trim() || 'Agent revised the outreach strategy.',
@@ -113,6 +125,7 @@ export async function writeStrategy(
 }
 
 export type InsertDraftInput = {
+  organizationId: string
   companyId: string
   mailboxId: string
   personId?: string | null
@@ -125,6 +138,7 @@ export type InsertDraftInput = {
 
 export async function findPendingDraftForEmail(
   companyId: string,
+  organizationId: string,
   toEmail: string
 ): Promise<OutreachDraft | null> {
   const normalized = normalizeEmail(toEmail)
@@ -135,6 +149,7 @@ export async function findPendingDraftForEmail(
     .where(
       and(
         eq(outreachDrafts.companyId, companyId),
+        eq(outreachDrafts.organizationId, organizationId),
         eq(outreachDrafts.status, 'pending_review'),
         sql`lower(${outreachDrafts.toEmail}) = ${normalized}`
       )
@@ -151,7 +166,7 @@ export async function insertDraft(
   | { ok: false; error: string; existingDraftId: string; existingSubject: string }
 > {
   const toEmail = normalizeEmail(input.toEmail) ?? input.toEmail.trim().toLowerCase()
-  const existing = await findPendingDraftForEmail(input.companyId, toEmail)
+  const existing = await findPendingDraftForEmail(input.companyId, input.organizationId, toEmail)
   if (existing) {
     return {
       ok: false,
@@ -165,6 +180,7 @@ export async function insertDraft(
     .insert(outreachDrafts)
     .values({
       companyId: input.companyId,
+      organizationId: input.organizationId,
       mailboxId: input.mailboxId,
       personId: input.personId ?? null,
       toEmail,
@@ -180,17 +196,18 @@ export async function insertDraft(
 
 export async function listRecentDrafts(
   companyId: string,
+  organizationId: string,
   limit = 10
 ): Promise<OutreachDraft[]> {
   return db
     .select()
     .from(outreachDrafts)
-    .where(eq(outreachDrafts.companyId, companyId))
+    .where(and(eq(outreachDrafts.companyId, companyId), eq(outreachDrafts.organizationId, organizationId)))
     .orderBy(desc(outreachDrafts.createdAt))
     .limit(limit)
 }
 
-export async function listPeopleAtCompany(companyId: string, limit = 25) {
+export async function listPeopleAtCompany(companyId: string, organizationId: string, limit = 25) {
   return db
     .select({
       id: people.id,
@@ -207,7 +224,7 @@ export async function listPeopleAtCompany(companyId: string, limit = 25) {
       lifecycleStatus: people.lifecycleStatus
     })
     .from(people)
-    .where(eq(people.companyId, companyId))
+    .where(and(eq(people.companyId, companyId), eq(people.organizationId, organizationId)))
     .orderBy(desc(people.lastSeenAt))
     .limit(limit)
 }
@@ -251,6 +268,7 @@ function fieldNames(patch: Record<string, unknown>): string[] {
 
 export async function updateCompanyDetails(
   companyId: string,
+  organizationId: string,
   patch: CompanyDetailsPatch,
   reason: string | null
 ): Promise<{ ok: true; changedFields: string[] } | { ok: false; error: string }> {
@@ -278,11 +296,12 @@ export async function updateCompanyDetails(
   const [updated] = await db
     .update(companies)
     .set(updates)
-    .where(eq(companies.id, companyId))
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
     .returning({ id: companies.id })
   if (!updated) return { ok: false, error: 'company not found' }
 
   await appendOutreachEvent({
+    organizationId,
     companyId,
     kind: 'record_update',
     summary: reason?.trim() || `Agent updated company fields: ${changedFields.join(', ')}`,
@@ -293,6 +312,7 @@ export async function updateCompanyDetails(
 
 export async function updatePersonAtCompany(
   companyId: string,
+  organizationId: string,
   personId: string,
   patch: PersonAtCompanyPatch,
   reason: string | null
@@ -327,11 +347,18 @@ export async function updatePersonAtCompany(
   const [updated] = await db
     .update(people)
     .set(updates)
-    .where(and(eq(people.id, personId), eq(people.companyId, companyId)))
+    .where(
+      and(
+        eq(people.id, personId),
+        eq(people.companyId, companyId),
+        eq(people.organizationId, organizationId)
+      )
+    )
     .returning({ id: people.id })
   if (!updated) return { ok: false, error: 'person not found at this company' }
 
   await appendOutreachEvent({
+    organizationId,
     companyId,
     kind: 'record_update',
     summary: reason?.trim() || `Agent updated person fields: ${changedFields.join(', ')}`,
@@ -342,13 +369,14 @@ export async function updatePersonAtCompany(
 
 export async function upsertPersonAtCompany(
   companyId: string,
+  organizationId: string,
   draft: UpsertPersonAtCompanyDraft,
   reason: string | null
 ): Promise<
   | { ok: true; personId: string; created: boolean; merged: boolean; changedFields: string[] }
   | { ok: false; error: string; personId?: string }
 > {
-  const result = await upsertPerson(draft, companyId, companyId)
+  const result = await upsertPerson(draft, organizationId, companyId, companyId)
   if (result.ok) {
     const changedFields: string[] = []
     const lifecycleStatus = cleanNullable(draft.lifecycleStatus)
@@ -356,10 +384,17 @@ export async function upsertPersonAtCompany(
       await db
         .update(people)
         .set({ lifecycleStatus, updatedAt: new Date(), lastSeenAt: new Date() })
-        .where(and(eq(people.id, result.personId), eq(people.companyId, companyId)))
+        .where(
+          and(
+            eq(people.id, result.personId),
+            eq(people.companyId, companyId),
+            eq(people.organizationId, organizationId)
+          )
+        )
       changedFields.push('lifecycleStatus')
     }
     await appendOutreachEvent({
+      organizationId,
       companyId,
       kind: 'record_update',
       summary: reason?.trim() || `Agent added person: ${draft.fullName}`,
@@ -378,7 +413,7 @@ export async function upsertPersonAtCompany(
     return { ok: false, error: result.message }
   }
 
-  const existing = await getPerson(result.personId)
+  const existing = await getPerson(result.personId, organizationId)
   if (!existing || existing.companyId !== companyId) {
     return {
       ok: false,
@@ -399,7 +434,7 @@ export async function upsertPersonAtCompany(
   if (cleanNullable(draft.notes)) patch.notes = draft.notes
   if (cleanNullable(draft.context)) patch.context = draft.context
   if (cleanNullable(draft.lifecycleStatus)) patch.lifecycleStatus = draft.lifecycleStatus
-  const merged = await updatePersonAtCompany(companyId, result.personId, patch, reason)
+  const merged = await updatePersonAtCompany(companyId, organizationId, result.personId, patch, reason)
   if (!merged.ok) return { ok: false, error: merged.error, personId: result.personId }
 
   return {
@@ -413,6 +448,7 @@ export async function upsertPersonAtCompany(
 
 export async function setNextWake(
   companyId: string,
+  organizationId: string,
   wakeAt: Date | null,
   patch?: { lastWorkedAt?: Date }
 ): Promise<void> {
@@ -423,12 +459,13 @@ export async function setNextWake(
       ...(patch?.lastWorkedAt ? { outreachLastWorkedAt: patch.lastWorkedAt } : {}),
       updatedAt: new Date()
     })
-    .where(eq(companies.id, companyId))
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
 }
 
 export async function markCompanyOutreachStatus(
   companyId: string,
   status: 'dormant' | 'working' | 'paused' | 'completed' | 'dead',
+  organizationId: string,
   options: { clearWake?: boolean } = {}
 ): Promise<void> {
   const patch: Record<string, unknown> = {
@@ -438,12 +475,16 @@ export async function markCompanyOutreachStatus(
   if (options.clearWake) patch.outreachNextWakeAt = null
   if (status === 'completed') patch.outreachCompletedAt = new Date()
   if (status === 'working') patch.outreachStartedAt = sql`coalesce(${companies.outreachStartedAt}, now())`
-  await db.update(companies).set(patch).where(eq(companies.id, companyId))
+  await db
+    .update(companies)
+    .set(patch)
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
 }
 
 export async function startWorkingCompanies(
   companyIds: string[],
-  mailboxId: string
+  mailboxId: string,
+  organizationId: string
 ): Promise<number> {
   if (companyIds.length === 0) return 0
   const result = await db
@@ -455,19 +496,24 @@ export async function startWorkingCompanies(
       outreachNextWakeAt: new Date(),
       updatedAt: new Date()
     })
-    .where(inArray(companies.id, companyIds))
+    .where(and(eq(companies.organizationId, organizationId), inArray(companies.id, companyIds)))
     .returning({ id: companies.id })
   return result.length
 }
 
-export async function getDraft(id: string): Promise<OutreachDraft | null> {
-  const [row] = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, id)).limit(1)
+export async function getDraft(id: string, organizationId: string): Promise<OutreachDraft | null> {
+  const [row] = await db
+    .select()
+    .from(outreachDrafts)
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
+    .limit(1)
   return row ?? null
 }
 
 /** Hard-delete a draft still in review. Used by the work-account agent to remove mistakes. */
 export async function deleteOutreachDraft(
   companyId: string,
+  organizationId: string,
   draftId: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const deleted = await db
@@ -476,6 +522,7 @@ export async function deleteOutreachDraft(
       and(
         eq(outreachDrafts.id, draftId),
         eq(outreachDrafts.companyId, companyId),
+        eq(outreachDrafts.organizationId, organizationId),
         eq(outreachDrafts.status, 'pending_review')
       )
     )
@@ -496,6 +543,7 @@ export async function deleteOutreachDraft(
 
 export async function markDraftSent(
   id: string,
+  organizationId: string,
   gmail: { gmailMessageId: string; gmailThreadId: string | null }
 ): Promise<OutreachDraft> {
   const [row] = await db
@@ -508,12 +556,16 @@ export async function markDraftSent(
       sendError: null,
       updatedAt: new Date()
     })
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .returning()
   return row
 }
 
-export async function markDraftFailed(id: string, error: string): Promise<OutreachDraft> {
+export async function markDraftFailed(
+  id: string,
+  organizationId: string,
+  error: string
+): Promise<OutreachDraft> {
   const [row] = await db
     .update(outreachDrafts)
     .set({
@@ -521,13 +573,14 @@ export async function markDraftFailed(id: string, error: string): Promise<Outrea
       sendError: error.slice(0, 2000),
       updatedAt: new Date()
     })
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .returning()
   return row
 }
 
 export async function markDraftDiscarded(
   id: string,
+  organizationId: string,
   reviewNotes?: string | null
 ): Promise<OutreachDraft> {
   const [row] = await db
@@ -537,13 +590,14 @@ export async function markDraftDiscarded(
       reviewNotes: reviewNotes ?? null,
       updatedAt: new Date()
     })
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .returning()
   return row
 }
 
 export async function patchDraft(
   id: string,
+  organizationId: string,
   patch: Partial<Pick<OutreachDraft, 'subject' | 'body' | 'bodyHtml' | 'toEmail' | 'reviewNotes'>>
 ): Promise<OutreachDraft> {
   const [row] = await db
@@ -556,12 +610,13 @@ export async function patchDraft(
       ...(patch.reviewNotes !== undefined ? { reviewNotes: patch.reviewNotes } : {}),
       updatedAt: new Date()
     })
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .returning()
   return row
 }
 
 export async function listDrafts(input: {
+  organizationId: string
   status?: string | null
   mailboxId?: string | null
   companyId?: string | null
@@ -570,7 +625,7 @@ export async function listDrafts(input: {
 }) {
   const limit = Math.min(200, Math.max(1, input.limit ?? 100))
   const offset = Math.max(0, input.offset ?? 0)
-  const filters = []
+  const filters = [eq(outreachDrafts.organizationId, input.organizationId)]
   if (input.status) filters.push(eq(outreachDrafts.status, input.status))
   if (input.mailboxId) filters.push(eq(outreachDrafts.mailboxId, input.mailboxId))
   if (input.companyId) filters.push(eq(outreachDrafts.companyId, input.companyId))
@@ -628,48 +683,56 @@ function appendOutreachInstructionBlock(
 
 export async function appendCompanyOutreachEmailInstructions(
   companyId: string,
+  organizationId: string,
   lines: string[]
 ): Promise<void> {
   if (lines.length === 0) return
   const [row] = await db
     .select({ cur: companies.outreachEmailInstructions })
     .from(companies)
-    .where(eq(companies.id, companyId))
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
     .limit(1)
   const header = `From draft feedback (${new Date().toISOString().slice(0, 10)}):`
   const next = appendOutreachInstructionBlock(row?.cur, header, lines)
   await db
     .update(companies)
     .set({ outreachEmailInstructions: next, updatedAt: new Date() })
-    .where(eq(companies.id, companyId))
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
 }
 
 export async function appendMailboxOutreachEmailInstructions(
   mailboxId: string,
+  organizationId: string,
   lines: string[]
 ): Promise<void> {
   if (lines.length === 0) return
   const [row] = await db
     .select({ cur: mailboxes.outreachEmailInstructions })
     .from(mailboxes)
-    .where(eq(mailboxes.id, mailboxId))
+    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.organizationId, organizationId)))
     .limit(1)
   const header = `From draft feedback (${new Date().toISOString().slice(0, 10)}):`
   const next = appendOutreachInstructionBlock(row?.cur, header, lines)
   await db
     .update(mailboxes)
     .set({ outreachEmailInstructions: next, updatedAt: new Date() })
-    .where(eq(mailboxes.id, mailboxId))
+    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.organizationId, organizationId)))
 }
 
-export async function countPendingDraftsByCompany(): Promise<Map<string, number>> {
+export async function countPendingDraftsByCompany(
+  organizationId: string | null = null
+): Promise<Map<string, number>> {
   const rows = await db
     .select({
       companyId: outreachDrafts.companyId,
       count: sql<number>`count(*)::int`
     })
     .from(outreachDrafts)
-    .where(eq(outreachDrafts.status, 'pending_review'))
+    .where(
+      organizationId
+        ? and(eq(outreachDrafts.organizationId, organizationId), eq(outreachDrafts.status, 'pending_review'))
+        : eq(outreachDrafts.status, 'pending_review')
+    )
     .groupBy(outreachDrafts.companyId)
   return new Map(rows.map((r) => [r.companyId, Number(r.count)]))
 }

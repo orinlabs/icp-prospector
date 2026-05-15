@@ -25,19 +25,25 @@ export async function startProspectWorkflow(campaignRunId: string): Promise<bool
  * Triggers `workAccount(companyId)` directly. Used by single-account "Run now"
  * and the bulk-start endpoint (which fans out one call per company).
  */
-export async function startWorkAccount(companyId: string): Promise<boolean> {
+export async function startWorkAccount(companyId: string, organizationId: string): Promise<boolean> {
   const client = renderClient()
   if (!client) return false
-  await client.render.workflows.startTask(`${client.workflowService}/workAccount`, [companyId])
+  await client.render.workflows.startTask(`${client.workflowService}/workAccount`, [
+    companyId,
+    organizationId
+  ])
   return true
 }
 
 /**
  * Triggers the scheduled sweeper task. Used by the Render Cron Job.
  */
-export async function startSweepDueAccounts(): Promise<boolean> {
+export async function startSweepDueAccounts(organizationId?: string): Promise<boolean> {
   const client = renderClient()
   if (!client) return false
-  await client.render.workflows.startTask(`${client.workflowService}/sweepDueAccounts`, [])
+  await client.render.workflows.startTask(
+    `${client.workflowService}/sweepDueAccounts`,
+    organizationId ? [organizationId] : []
+  )
   return true
 }

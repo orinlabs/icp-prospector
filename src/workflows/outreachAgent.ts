@@ -535,9 +535,11 @@ const TOOLS = [
 
 type AgentInput = {
   companyId: string
+  organizationId?: string
 }
 
 type ToolCtx = {
+  organizationId: string
   companyId: string
   mailboxId: string
   used: { webSearches: number; fetchUrls: number }
@@ -584,12 +586,12 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
         if (!newText.trim()) {
           return { kind: 'continue', content: JSON.stringify({ error: 'new_text required' }) }
         }
-        await writeStrategy(ctx.companyId, newText, reason)
+        await writeStrategy(ctx.companyId, ctx.organizationId, newText, reason)
         return { kind: 'continue', content: JSON.stringify({ ok: true }) }
       }
       case 'list_recent_events': {
         const limit = clamp(Number(args.limit) || 20, 1, 50)
-        const events = await listRecentOutreachEvents(ctx.companyId, limit)
+        const events = await listRecentOutreachEvents(ctx.companyId, ctx.organizationId, limit)
         return {
           kind: 'continue',
           content: JSON.stringify({
@@ -605,7 +607,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       }
       case 'list_drafts': {
         const limit = clamp(Number(args.limit) || 10, 1, 25)
-        const drafts = await listRecentDrafts(ctx.companyId, limit)
+        const drafts = await listRecentDrafts(ctx.companyId, ctx.organizationId, limit)
         return {
           kind: 'continue',
           content: JSON.stringify({
@@ -625,7 +627,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       }
       case 'list_people_at_company': {
         const limit = clamp(Number(args.limit) || 25, 1, 50)
-        const rows = await listPeopleAtCompany(ctx.companyId, limit)
+        const rows = await listPeopleAtCompany(ctx.companyId, ctx.organizationId, limit)
         return {
           kind: 'continue',
           content: JSON.stringify({
@@ -648,6 +650,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       }
       case 'search_existing_people': {
         const { rows, total } = await searchPeople({
+          organizationId: ctx.organizationId,
           query: typeof args.query === 'string' ? args.query : null,
           companyName: typeof args.company_name === 'string' ? args.company_name : null,
           limit: typeof args.limit === 'number' ? args.limit : 20,
@@ -671,7 +674,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       case 'get_person': {
         const id = typeof args.id === 'string' ? args.id : null
         if (!id) return { kind: 'continue', content: JSON.stringify({ error: 'id required' }) }
-        const person = await getPerson(id)
+        const person = await getPerson(id, ctx.organizationId)
         if (!person) return { kind: 'continue', content: JSON.stringify({ error: 'not_found' }) }
         return {
           kind: 'continue',
@@ -696,6 +699,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       }
       case 'search_existing_companies': {
         const { rows, total } = await searchCompanies({
+          organizationId: ctx.organizationId,
           query: typeof args.query === 'string' ? args.query : null,
           limit: typeof args.limit === 'number' ? args.limit : 20,
           offset: typeof args.offset === 'number' ? args.offset : 0
@@ -767,6 +771,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       case 'update_company_details': {
         const out = await updateCompanyDetails(
           ctx.companyId,
+          ctx.organizationId,
           {
             ...(Object.prototype.hasOwnProperty.call(args, 'name')
               ? { name: (args.name as string | null | undefined) ?? null }
@@ -811,6 +816,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
         }
         const out = await updatePersonAtCompany(
           ctx.companyId,
+          ctx.organizationId,
           personId,
           {
             ...(Object.prototype.hasOwnProperty.call(args, 'full_name')
@@ -866,6 +872,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
         }
         const result = await upsertPersonAtCompany(
           ctx.companyId,
+          ctx.organizationId,
           {
             fullName,
             title: (args.title as string | null | undefined) ?? null,
@@ -904,7 +911,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
         if (!draftId.trim()) {
           return { kind: 'continue', content: JSON.stringify({ error: 'draft_id required' }) }
         }
-        const out = await deleteOutreachDraft(ctx.companyId, draftId)
+        const out = await deleteOutreachDraft(ctx.companyId, ctx.organizationId, draftId)
         if (!out.ok) {
           return { kind: 'continue', content: JSON.stringify({ error: out.error, reason }) }
         }
@@ -924,6 +931,7 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
           }
         }
         const inserted = await insertDraft({
+          organizationId: ctx.organizationId,
           companyId: ctx.companyId,
           mailboxId: ctx.mailboxId,
           personId: typeof args.person_id === 'string' ? args.person_id : null,
@@ -957,8 +965,9 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       }
       case 'mark_completed': {
         const reason = typeof args.reason === 'string' ? args.reason : 'completed by agent'
-        await markCompanyOutreachStatus(ctx.companyId, 'completed', { clearWake: true })
+        await markCompanyOutreachStatus(ctx.companyId, 'completed', ctx.organizationId, { clearWake: true })
         await appendOutreachEvent({
+          organizationId: ctx.organizationId,
           companyId: ctx.companyId,
           kind: 'decision',
           summary: `Marked completed: ${reason}`
@@ -971,8 +980,9 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
       }
       case 'pause': {
         const reason = typeof args.reason === 'string' ? args.reason : 'paused by agent'
-        await markCompanyOutreachStatus(ctx.companyId, 'paused', { clearWake: true })
+        await markCompanyOutreachStatus(ctx.companyId, 'paused', ctx.organizationId, { clearWake: true })
         await appendOutreachEvent({
+          organizationId: ctx.organizationId,
           companyId: ctx.companyId,
           kind: 'decision',
           summary: `Paused: ${reason}`
@@ -991,8 +1001,9 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
             ? clamp(Math.round(hoursRaw), 1, 24 * 30)
             : 24
         const wakeAt = new Date(Date.now() + hours * 60 * 60 * 1000)
-        await setNextWake(ctx.companyId, wakeAt, { lastWorkedAt: new Date() })
+        await setNextWake(ctx.companyId, ctx.organizationId, wakeAt, { lastWorkedAt: new Date() })
         await appendOutreachEvent({
+          organizationId: ctx.organizationId,
           companyId: ctx.companyId,
           kind: 'note',
           summary: `Sleeping for ${hours}h: ${reason}`,
@@ -1232,10 +1243,11 @@ function buildSeedUserMessage(input: {
 
 export async function workAccountAgent(input: AgentInput): Promise<WorkAccountAgentResult> {
   const now = new Date()
-  const company = await getCompanyForOutreach(input.companyId)
+  const company = await getCompanyForOutreach(input.companyId, input.organizationId)
   if (!company) {
     return { status: 'error', error: `company not found: ${input.companyId}`, steps: 0, draftsCreated: 0 }
   }
+  const organizationId = company.organizationId
   if (!company.outreachMailboxId || !company.mailbox) {
     return {
       status: 'error',
@@ -1255,9 +1267,9 @@ export async function workAccountAgent(input: AgentInput): Promise<WorkAccountAg
 
   const [strategy, events, drafts, peopleList] = await Promise.all([
     Promise.resolve(company.outreachStrategy),
-    listRecentOutreachEvents(company.id, 25),
-    listRecentDrafts(company.id, 10),
-    listPeopleAtCompany(company.id, 25)
+    listRecentOutreachEvents(company.id, organizationId, 25),
+    listRecentDrafts(company.id, organizationId, 10),
+    listPeopleAtCompany(company.id, organizationId, 25)
   ])
 
   const messages: ChatMessage[] = [
@@ -1269,6 +1281,7 @@ export async function workAccountAgent(input: AgentInput): Promise<WorkAccountAg
   ]
 
   const ctx: ToolCtx = {
+    organizationId,
     companyId: company.id,
     mailboxId: company.outreachMailboxId,
     used: { webSearches: 0, fetchUrls: 0 },
@@ -1297,8 +1310,9 @@ export async function workAccountAgent(input: AgentInput): Promise<WorkAccountAg
       if (finishReason === 'stop') {
         // Auto-sleep so we don't leave the account hanging.
         const wakeAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
-        await setNextWake(ctx.companyId, wakeAt, { lastWorkedAt: new Date() })
+        await setNextWake(ctx.companyId, ctx.organizationId, wakeAt, { lastWorkedAt: new Date() })
         await appendOutreachEvent({
+          organizationId: ctx.organizationId,
           companyId: ctx.companyId,
           kind: 'note',
           summary: 'Agent ended without a sleep tool call; defaulting to 24h sleep.'
@@ -1370,8 +1384,9 @@ export async function workAccountAgent(input: AgentInput): Promise<WorkAccountAg
 
   // Step budget exhausted without an explicit terminator: park it.
   const wakeAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
-  await setNextWake(ctx.companyId, wakeAt, { lastWorkedAt: new Date() })
+  await setNextWake(ctx.companyId, ctx.organizationId, wakeAt, { lastWorkedAt: new Date() })
   await appendOutreachEvent({
+    organizationId: ctx.organizationId,
     companyId: ctx.companyId,
     kind: 'note',
     summary: `Agent step budget (${MAX_STEPS}) exhausted; sleeping 24h.`

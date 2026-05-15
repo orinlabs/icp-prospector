@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm'
+import { and, desc, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 
@@ -10,6 +10,7 @@ import {
   prospectListPeople,
   prospectLists
 } from '../db/schema.js'
+import type { AppVariables } from '../lib/orgs.js'
 
 const listTypeValues = ['people', 'companies'] as const
 
@@ -25,7 +26,7 @@ const addMembersSchema = z.object({
   companyIds: z.array(z.string().uuid()).max(500).optional().default([])
 })
 
-export const listsRoutes = new Hono()
+export const listsRoutes = new Hono<{ Variables: AppVariables }>()
 
 type ProspectListRow = typeof prospectLists.$inferSelect
 
@@ -41,8 +42,12 @@ async function listSummary(list: ProspectListRow) {
   }
 }
 
-async function listDetail(id: string) {
-  const [list] = await db.select().from(prospectLists).where(eq(prospectLists.id, id)).limit(1)
+async function listDetail(id: string, organizationId: string) {
+  const [list] = await db
+    .select()
+    .from(prospectLists)
+    .where(and(eq(prospectLists.id, id), eq(prospectLists.organizationId, organizationId)))
+    .limit(1)
   if (!list) return null
 
   if (list.type === 'people') {
@@ -50,7 +55,7 @@ async function listDetail(id: string) {
       .select({ person: people })
       .from(prospectListPeople)
       .innerJoin(people, eq(people.id, prospectListPeople.personId))
-      .where(eq(prospectListPeople.listId, id))
+      .where(and(eq(prospectListPeople.listId, id), eq(people.organizationId, organizationId)))
     return {
       ...(await listSummary(list)),
       people: members.map((row) => row.person),
@@ -62,7 +67,7 @@ async function listDetail(id: string) {
     .select({ company: companies })
     .from(prospectListCompanies)
     .innerJoin(companies, eq(companies.id, prospectListCompanies.companyId))
-    .where(eq(prospectListCompanies.listId, id))
+    .where(and(eq(prospectListCompanies.listId, id), eq(companies.organizationId, organizationId)))
   return {
     ...(await listSummary(list)),
     people: [],
@@ -74,27 +79,46 @@ async function addMembers(input: {
   list: ProspectListRow
   personIds: string[]
   companyIds: string[]
+  organizationId: string
 }) {
   if (input.list.type === 'people' && input.personIds.length > 0) {
+    const rows = await db
+      .select({ id: people.id })
+      .from(people)
+      .where(and(eq(people.organizationId, input.organizationId), inArray(people.id, input.personIds)))
+    if (rows.length === 0) return
     await db
       .insert(prospectListPeople)
-      .values(input.personIds.map((personId) => ({ listId: input.list.id, personId })))
+      .values(rows.map((row) => ({ listId: input.list.id, personId: row.id })))
       .onConflictDoNothing()
   }
   if (input.list.type === 'companies' && input.companyIds.length > 0) {
+    const rows = await db
+      .select({ id: companies.id })
+      .from(companies)
+      .where(
+        and(eq(companies.organizationId, input.organizationId), inArray(companies.id, input.companyIds))
+      )
+    if (rows.length === 0) return
     await db
       .insert(prospectListCompanies)
-      .values(input.companyIds.map((companyId) => ({ listId: input.list.id, companyId })))
+      .values(rows.map((row) => ({ listId: input.list.id, companyId: row.id })))
       .onConflictDoNothing()
   }
 }
 
 listsRoutes.get('/', async (c) => {
-  const rows = await db.select().from(prospectLists).orderBy(desc(prospectLists.createdAt))
+  const organizationId = c.get('organization').id
+  const rows = await db
+    .select()
+    .from(prospectLists)
+    .where(eq(prospectLists.organizationId, organizationId))
+    .orderBy(desc(prospectLists.createdAt))
   return c.json({ data: await Promise.all(rows.map((row) => listSummary(row))) })
 })
 
 listsRoutes.post('/', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = createListSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -103,37 +127,44 @@ listsRoutes.post('/', async (c) => {
   const body = parsed.data
   const [list] = await db
     .insert(prospectLists)
-    .values({ name: body.name, type: body.type })
+    .values({ organizationId, name: body.name, type: body.type })
     .returning()
-  await addMembers({ list, personIds: body.personIds, companyIds: body.companyIds })
-  return c.json(await listDetail(list.id), 201)
+  await addMembers({ list, personIds: body.personIds, companyIds: body.companyIds, organizationId })
+  return c.json(await listDetail(list.id, organizationId), 201)
 })
 
 listsRoutes.post('/:id/members', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const parsed = addMembersSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
 
-  const [list] = await db.select().from(prospectLists).where(eq(prospectLists.id, id)).limit(1)
+  const [list] = await db
+    .select()
+    .from(prospectLists)
+    .where(and(eq(prospectLists.id, id), eq(prospectLists.organizationId, organizationId)))
+    .limit(1)
   if (!list) return c.json({ error: 'not found' }, 404)
 
   await addMembers({
     list,
     personIds: parsed.data.personIds,
-    companyIds: parsed.data.companyIds
+    companyIds: parsed.data.companyIds,
+    organizationId
   })
   await db
     .update(prospectLists)
     .set({ updatedAt: new Date() })
-    .where(eq(prospectLists.id, id))
-  return c.json(await listDetail(id))
+    .where(and(eq(prospectLists.id, id), eq(prospectLists.organizationId, organizationId)))
+  return c.json(await listDetail(id, organizationId))
 })
 
 listsRoutes.get('/:id', async (c) => {
   const id = c.req.param('id')
-  const detail = await listDetail(id)
+  const organizationId = c.get('organization').id
+  const detail = await listDetail(id, organizationId)
   if (!detail) return c.json({ error: 'not found' }, 404)
   return c.json(detail)
 })

@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
-import { apiPost, type AuthUser } from '@/api'
+import { apiPost, type AuthSession } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
 interface LoginPageProps {
-  onAuthed: (user: AuthUser) => void
+  onAuthed: (session: AuthSession) => void
 }
 
 export function LoginPage({ onAuthed }: LoginPageProps) {
@@ -40,14 +40,18 @@ export function LoginPage({ onAuthed }: LoginPageProps) {
     setError(null)
     try {
       const trimmed = email.trim()
-      const data = await apiPost<{ user: AuthUser }>('/auth/verify-code', {
+      const data = await apiPost<AuthSession>('/auth/verify-code', {
         email: trimmed,
         code: code.trim()
       })
-      onAuthed(data.user)
+      onAuthed(data)
       const raw = (location.state as { from?: string } | null)?.from
       const dest =
-        raw && raw.startsWith('/') && !raw.startsWith('/login') ? raw : '/people'
+        data.needsOrganizationSetup || !data.activeOrganization
+          ? '/onboarding'
+          : raw && raw.startsWith('/') && !raw.startsWith('/login')
+            ? raw
+            : '/people'
       navigate(dest, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid code')
@@ -61,8 +65,8 @@ export function LoginPage({ onAuthed }: LoginPageProps) {
       <div className="w-full max-w-sm rounded-xl border border-line bg-surface p-8 shadow-sm">
         <h1 className="text-lg font-semibold tracking-tight">Sign in to Flash</h1>
         <p className="mt-1.5 text-sm text-ink-muted">
-          Use your <span className="font-medium text-ink">@orinlabs.ai</span> email. We will email you
-          a one-time code.
+          Use your work email. Flash will email you a one-time code and match access to your
+          organization domain.
         </p>
 
         {error ? (
@@ -79,7 +83,7 @@ export function LoginPage({ onAuthed }: LoginPageProps) {
                 id="login-email"
                 type="email"
                 autoComplete="email"
-                placeholder="you@orinlabs.ai"
+                placeholder="you@company.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required

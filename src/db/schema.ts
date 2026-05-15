@@ -12,10 +12,33 @@ import {
   uuid
 } from 'drizzle-orm/pg-core'
 
+export const organizations = pgTable(
+  'organizations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    emailDomain: text('email_domain').notNull(),
+    createdByUserId: uuid('created_by_user_id').references(() => appUsers.id, {
+      onDelete: 'set null'
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex('organizations_slug_unique').on(t.slug),
+    uniqueIndex('organizations_email_domain_lower_unique').on(sql`lower(${t.emailDomain})`),
+    index('organizations_created_by_idx').on(t.createdByUserId)
+  ]
+)
+
 export const companies = pgTable(
   'companies',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     domain: text('domain'),
     website: text('website'),
@@ -38,8 +61,9 @@ export const companies = pgTable(
   },
   (t) => [
     uniqueIndex('companies_domain_lower_unique')
-      .on(sql`lower(trim(${t.domain}))`)
+      .on(t.organizationId, sql`lower(trim(${t.domain}))`)
       .where(sql`${t.domain} is not null`),
+    index('companies_organization_idx').on(t.organizationId),
     index('companies_name_idx').on(t.name),
     index('companies_outreach_status_idx').on(t.outreachStatus),
     index('companies_outreach_wake_idx').on(t.outreachNextWakeAt)
@@ -50,6 +74,9 @@ export const mailboxes = pgTable(
   'mailboxes',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     email: text('email').notNull(),
     displayName: text('display_name'),
     signature: text('signature'),
@@ -65,7 +92,8 @@ export const mailboxes = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [
-    uniqueIndex('mailboxes_email_lower_unique').on(sql`lower(${t.email})`),
+    uniqueIndex('mailboxes_email_lower_unique').on(t.organizationId, sql`lower(${t.email})`),
+    index('mailboxes_organization_idx').on(t.organizationId),
     index('mailboxes_status_idx').on(t.status)
   ]
 )
@@ -74,6 +102,9 @@ export const outreachEvents = pgTable(
   'outreach_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     companyId: uuid('company_id')
       .notNull()
       .references(() => companies.id, { onDelete: 'cascade' }),
@@ -84,6 +115,7 @@ export const outreachEvents = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [
+    index('outreach_events_organization_idx').on(t.organizationId),
     index('outreach_events_company_idx').on(t.companyId),
     index('outreach_events_created_idx').on(t.createdAt)
   ]
@@ -93,6 +125,9 @@ export const outreachDrafts = pgTable(
   'outreach_drafts',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     companyId: uuid('company_id')
       .notNull()
       .references(() => companies.id, { onDelete: 'cascade' }),
@@ -115,6 +150,7 @@ export const outreachDrafts = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [
+    index('outreach_drafts_organization_idx').on(t.organizationId),
     index('outreach_drafts_company_idx').on(t.companyId),
     index('outreach_drafts_mailbox_idx').on(t.mailboxId),
     index('outreach_drafts_status_idx').on(t.status),
@@ -122,20 +158,30 @@ export const outreachDrafts = pgTable(
   ]
 )
 
-export const campaigns = pgTable('campaigns', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  name: text('name').notNull(),
-  icpDocument: text('icp_document').notNull(),
-  targetCount: integer('target_count').notNull(),
-  status: text('status').notNull().default('draft'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
-})
+export const campaigns = pgTable(
+  'campaigns',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    icpDocument: text('icp_document').notNull(),
+    targetCount: integer('target_count').notNull(),
+    status: text('status').notNull().default('draft'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [index('campaigns_organization_idx').on(t.organizationId)]
+)
 
 export const people = pgTable(
   'people',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     companyId: uuid('company_id').references(() => companies.id, { onDelete: 'set null' }),
     fullName: text('full_name'),
     nameNormalized: text('name_normalized'),
@@ -161,11 +207,12 @@ export const people = pgTable(
   },
   (t) => [
     uniqueIndex('people_email_lower_unique')
-      .on(sql`lower(trim(${t.email}))`)
+      .on(t.organizationId, sql`lower(trim(${t.email}))`)
       .where(sql`${t.email} is not null`),
     uniqueIndex('people_linkedin_url_unique')
-      .on(t.linkedinUrl)
+      .on(t.organizationId, t.linkedinUrl)
       .where(sql`${t.linkedinUrl} is not null`),
+    index('people_organization_idx').on(t.organizationId),
     index('people_company_idx').on(t.companyId),
     index('people_lifecycle_idx').on(t.lifecycleStatus),
     index('people_first_campaign_idx').on(t.firstSeenCampaignId)
@@ -176,12 +223,19 @@ export const prospectLists = pgTable(
   'prospect_lists',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     type: text('type').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
   },
-  (t) => [index('prospect_lists_type_idx').on(t.type), index('prospect_lists_created_idx').on(t.createdAt)]
+  (t) => [
+    index('prospect_lists_organization_idx').on(t.organizationId),
+    index('prospect_lists_type_idx').on(t.type),
+    index('prospect_lists_created_idx').on(t.createdAt)
+  ]
 )
 
 export const prospectListPeople = pgTable(
@@ -224,6 +278,9 @@ export const campaignRuns = pgTable(
   'campaign_runs',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     campaignId: uuid('campaign_id')
       .notNull()
       .references(() => campaigns.id, { onDelete: 'cascade' }),
@@ -234,13 +291,20 @@ export const campaignRuns = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
   },
-  (t) => [index('campaign_runs_campaign_idx').on(t.campaignId), index('campaign_runs_status_idx').on(t.status)]
+  (t) => [
+    index('campaign_runs_organization_idx').on(t.organizationId),
+    index('campaign_runs_campaign_idx').on(t.campaignId),
+    index('campaign_runs_status_idx').on(t.status)
+  ]
 )
 
 export const discoveryEvents = pgTable(
   'discovery_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     campaignId: uuid('campaign_id')
       .notNull()
       .references(() => campaigns.id, { onDelete: 'cascade' }),
@@ -252,6 +316,7 @@ export const discoveryEvents = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [
+    index('discovery_events_organization_idx').on(t.organizationId),
     index('discovery_events_campaign_idx').on(t.campaignId),
     index('discovery_events_person_idx').on(t.personId)
   ]
@@ -291,12 +356,62 @@ export const appSessions = pgTable(
       .notNull()
       .references(() => appUsers.id, { onDelete: 'cascade' }),
     tokenHash: text('token_hash').notNull().unique(),
+    activeOrganizationId: uuid('active_organization_id').references(() => organizations.id, {
+      onDelete: 'set null'
+    }),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [
     index('app_sessions_user_idx').on(t.userId),
+    index('app_sessions_active_org_idx').on(t.activeOrganizationId),
     index('app_sessions_expires_idx').on(t.expiresAt)
+  ]
+)
+
+export const organizationMemberships = pgTable(
+  'organization_memberships',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => appUsers.id, { onDelete: 'cascade' }),
+    role: text('role').notNull().default('member'),
+    status: text('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex('organization_memberships_org_user_unique').on(t.organizationId, t.userId),
+    index('organization_memberships_user_idx').on(t.userId),
+    index('organization_memberships_org_idx').on(t.organizationId)
+  ]
+)
+
+export const organizationInvites = pgTable(
+  'organization_invites',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    email: text('email').notNull(),
+    role: text('role').notNull().default('member'),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    createdByUserId: uuid('created_by_user_id').references(() => appUsers.id, {
+      onDelete: 'set null'
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    index('organization_invites_org_idx').on(t.organizationId),
+    index('organization_invites_email_idx').on(t.email),
+    index('organization_invites_expires_idx').on(t.expiresAt)
   ]
 )
 
@@ -304,6 +419,9 @@ export const usageEvents = pgTable(
   'usage_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
     provider: text('provider').notNull(),
     operation: text('operation').notNull(),
     model: text('model'),
@@ -328,6 +446,7 @@ export const usageEvents = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [
+    index('usage_events_organization_idx').on(t.organizationId),
     index('usage_events_campaign_idx').on(t.campaignId),
     index('usage_events_run_idx').on(t.campaignRunId),
     index('usage_events_company_idx').on(t.companyId),
@@ -349,3 +468,6 @@ export type OutreachEvent = typeof outreachEvents.$inferSelect
 export type OutreachDraft = typeof outreachDrafts.$inferSelect
 export type AppUser = typeof appUsers.$inferSelect
 export type AppSession = typeof appSessions.$inferSelect
+export type Organization = typeof organizations.$inferSelect
+export type OrganizationMembership = typeof organizationMemberships.$inferSelect
+export type OrganizationInvite = typeof organizationInvites.$inferSelect

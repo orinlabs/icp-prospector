@@ -1,14 +1,16 @@
 import { randomBytes } from 'node:crypto'
 
-import { desc, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 
 import { db } from '../db/client.js'
 import { mailboxes } from '../db/schema.js'
 import { buildConsentUrl, connectMailboxFromCode } from '../lib/gmail/oauth.js'
+import type { AppVariables } from '../lib/orgs.js'
 
-export const mailboxesRoutes = new Hono()
+export const mailboxesRoutes = new Hono<{ Variables: AppVariables }>()
+const oauthStates = new Map<string, { userId: string; organizationId: string; expiresAt: number }>()
 
 const patchSchema = z
   .object({
@@ -45,14 +47,22 @@ function redact<T extends { oauthRefreshToken?: string | null; oauthAccessToken?
 }
 
 mailboxesRoutes.get('/', async (c) => {
-  const rows = await db.select().from(mailboxes).orderBy(desc(mailboxes.createdAt))
+  const organizationId = c.get('organization').id
+  const rows = await db
+    .select()
+    .from(mailboxes)
+    .where(eq(mailboxes.organizationId, organizationId))
+    .orderBy(desc(mailboxes.createdAt))
   return c.json(rows.map(redact))
 })
 
 mailboxesRoutes.post('/oauth/start', (c) => {
+  const user = c.get('user')
+  const organizationId = c.get('organization').id
   let consentUrl: string
   try {
     const state = randomBytes(16).toString('hex')
+    oauthStates.set(state, { userId: user.id, organizationId, expiresAt: Date.now() + 10 * 60 * 1000 })
     consentUrl = buildConsentUrl(state)
     return c.json({ consentUrl, state })
   } catch (err) {
@@ -65,6 +75,7 @@ mailboxesRoutes.post('/oauth/start', (c) => {
 
 mailboxesRoutes.get('/oauth/callback', async (c) => {
   const code = c.req.query('code')
+  const state = c.req.query('state')
   const error = c.req.query('error')
   if (error) {
     return c.html(callbackHtml({ ok: false, message: `Google OAuth error: ${error}` }), 400)
@@ -72,8 +83,13 @@ mailboxesRoutes.get('/oauth/callback', async (c) => {
   if (!code) {
     return c.html(callbackHtml({ ok: false, message: 'Missing ?code in callback URL.' }), 400)
   }
+  const oauthState = state ? oauthStates.get(state) : undefined
+  if (!state || !oauthState || oauthState.expiresAt < Date.now()) {
+    return c.html(callbackHtml({ ok: false, message: 'Missing or expired OAuth state.' }), 400)
+  }
+  oauthStates.delete(state)
   try {
-    const result = await connectMailboxFromCode(code)
+    const result = await connectMailboxFromCode(code, oauthState.organizationId)
     return c.html(
       callbackHtml({
         ok: true,
@@ -96,6 +112,7 @@ mailboxesRoutes.get('/oauth/callback', async (c) => {
 
 mailboxesRoutes.patch('/:id', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const parsed = patchSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -113,7 +130,7 @@ mailboxesRoutes.patch('/:id', async (c) => {
         : {}),
       updatedAt: new Date()
     })
-    .where(eq(mailboxes.id, id))
+    .where(and(eq(mailboxes.id, id), eq(mailboxes.organizationId, organizationId)))
     .returning()
   if (!updated) return c.json({ error: 'not found' }, 404)
   return c.json(redact(updated))
@@ -121,6 +138,7 @@ mailboxesRoutes.patch('/:id', async (c) => {
 
 mailboxesRoutes.delete('/:id', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const [updated] = await db
     .update(mailboxes)
     .set({
@@ -129,7 +147,7 @@ mailboxesRoutes.delete('/:id', async (c) => {
       oauthRefreshToken: null,
       updatedAt: new Date()
     })
-    .where(eq(mailboxes.id, id))
+    .where(and(eq(mailboxes.id, id), eq(mailboxes.organizationId, organizationId)))
     .returning()
   if (!updated) return c.json({ error: 'not found' }, 404)
   return c.json({ ok: true, mailbox: redact(updated) })

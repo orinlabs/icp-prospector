@@ -12,6 +12,8 @@ interface AppShellProps<TId extends string> {
   sidebarFooter?: React.ReactNode
   onOpenSearch?: () => void
   userInitials?: string
+  organizationName?: string
+  organizationDomain?: string
   onSignOut?: () => void
   children: React.ReactNode
 }
@@ -23,6 +25,8 @@ export function AppShell<TId extends string>({
   sidebarFooter,
   onOpenSearch,
   userInitials,
+  organizationName,
+  organizationDomain,
   onSignOut,
   children
 }: AppShellProps<TId>) {
@@ -57,6 +61,8 @@ export function AppShell<TId extends string>({
         theme={theme}
         onOpenSearch={onOpenSearch}
         userInitials={userInitials}
+        organizationName={organizationName}
+        organizationDomain={organizationDomain}
         onSignOut={onSignOut}
       />
       <div className="flex min-h-0 flex-1">

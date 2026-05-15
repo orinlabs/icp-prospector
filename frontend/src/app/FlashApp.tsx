@@ -19,6 +19,7 @@ import {
   apiGet,
   apiPost,
   apiPostNdjson,
+  type AuthSession,
   type AuthUser,
   type Campaign,
   type CampaignRun,
@@ -80,10 +81,12 @@ function parseDetailFromSearch(search: URLSearchParams): DetailSelection | null 
 
 export function FlashApp({
   authUser,
-  setAuthUser
+  activeOrganization,
+  setAuthSession
 }: {
   authUser: AuthUser
-  setAuthUser: Dispatch<SetStateAction<AuthUser | null>>
+  activeOrganization: AuthSession['activeOrganization']
+  setAuthSession: Dispatch<SetStateAction<AuthSession | null>>
 }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -720,7 +723,7 @@ export function FlashApp({
     } catch {
       // still sign out locally
     }
-    setAuthUser(null)
+    setAuthSession(null)
   }
 
   if (!tabValid) {
@@ -757,6 +760,8 @@ export function FlashApp({
         setPaletteOpen(true)
       }}
       userInitials={emailToInitials(authUser.email)}
+      organizationName={activeOrganization?.name ?? undefined}
+      organizationDomain={activeOrganization?.emailDomain ?? undefined}
       onSignOut={() => void handleSignOut()}
       sidebarFooter={
         <div className="text-2xs leading-relaxed text-ink-faint">

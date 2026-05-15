@@ -16,6 +16,7 @@ import { z } from 'zod'
 import { db } from '../db/client.js'
 import { companies, discoveryEvents, mailboxes, outreachDrafts, people } from '../db/schema.js'
 import { openRouterReasoningConfig } from '../lib/openrouter.js'
+import type { AppVariables } from '../lib/orgs.js'
 import { startSweepDueAccounts, startWorkAccount } from '../lib/workflowTrigger.js'
 import {
   listRecentDrafts,
@@ -70,9 +71,10 @@ const querySchema = z.object({
   offset: z.coerce.number().int().min(0).optional().default(0)
 })
 
-export const companiesRoutes = new Hono()
+export const companiesRoutes = new Hono<{ Variables: AppVariables }>()
 
 companiesRoutes.get('/', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = querySchema.safeParse({
     q: c.req.query('q') ?? undefined,
     outreach_status: c.req.query('outreach_status') ?? undefined,
@@ -116,7 +118,7 @@ companiesRoutes.get('/', async (c) => {
       )
     : undefined
 
-  const filters: SQL[] = []
+  const filters: SQL[] = [eq(companies.organizationId, organizationId)]
   if (outreach_status) {
     filters.push(eq(companies.outreachStatus, outreach_status))
   }
@@ -129,22 +131,22 @@ companiesRoutes.get('/', async (c) => {
   }
   if (has_people === 'true') {
     filters.push(
-      sql`exists (select 1 from ${people} where ${people.companyId} = ${companies.id})`
+      sql`exists (select 1 from ${people} where ${people.companyId} = ${companies.id} and ${people.organizationId} = ${organizationId})`
     )
   }
   if (has_people === 'false') {
     filters.push(
-      sql`not exists (select 1 from ${people} where ${people.companyId} = ${companies.id})`
+      sql`not exists (select 1 from ${people} where ${people.companyId} = ${companies.id} and ${people.organizationId} = ${organizationId})`
     )
   }
   if (pending_drafts === 'true') {
     filters.push(
-      sql`exists (select 1 from ${outreachDrafts} where ${outreachDrafts.companyId} = ${companies.id} and ${outreachDrafts.status} = 'pending_review')`
+      sql`exists (select 1 from ${outreachDrafts} where ${outreachDrafts.companyId} = ${companies.id} and ${outreachDrafts.organizationId} = ${organizationId} and ${outreachDrafts.status} = 'pending_review')`
     )
   }
   if (pending_drafts === 'false') {
     filters.push(
-      sql`not exists (select 1 from ${outreachDrafts} where ${outreachDrafts.companyId} = ${companies.id} and ${outreachDrafts.status} = 'pending_review')`
+      sql`not exists (select 1 from ${outreachDrafts} where ${outreachDrafts.companyId} = ${companies.id} and ${outreachDrafts.organizationId} = ${organizationId} and ${outreachDrafts.status} = 'pending_review')`
     )
   }
   if (campaign_id) {
@@ -154,6 +156,8 @@ companiesRoutes.get('/', async (c) => {
         from ${people}
         join ${discoveryEvents} on ${discoveryEvents.personId} = ${people.id}
         where ${people.companyId} = ${companies.id}
+          and ${people.organizationId} = ${organizationId}
+          and ${discoveryEvents.organizationId} = ${organizationId}
           and ${discoveryEvents.campaignId} = ${campaign_id}
       )`
     )
@@ -165,6 +169,8 @@ companiesRoutes.get('/', async (c) => {
         from ${people}
         join ${discoveryEvents} on ${discoveryEvents.personId} = ${people.id}
         where ${people.companyId} = ${companies.id}
+          and ${people.organizationId} = ${organizationId}
+          and ${discoveryEvents.organizationId} = ${organizationId}
           and ${discoveryEvents.metadata}->>'campaignRunId' = ${campaign_run_id}
       )`
     )
@@ -179,7 +185,7 @@ companiesRoutes.get('/', async (c) => {
   const rows = await db
     .select({
       ...getTableColumns(companies),
-      peopleCount: sql<number>`(select count(*)::int from ${people} where ${people.companyId} = ${companies.id})`.as(
+      peopleCount: sql<number>`(select count(*)::int from ${people} where ${people.companyId} = ${companies.id} and ${people.organizationId} = ${organizationId})`.as(
         'people_count'
       )
     })
@@ -192,6 +198,7 @@ companiesRoutes.get('/', async (c) => {
 })
 
 companiesRoutes.post('/', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = createCompany.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -203,7 +210,12 @@ companiesRoutes.post('/', async (c) => {
     const [existing] = await db
       .select()
       .from(companies)
-      .where(sql`lower(trim(${companies.domain})) = ${domain.toLowerCase()}`)
+      .where(
+        and(
+          eq(companies.organizationId, organizationId),
+          sql`lower(trim(${companies.domain})) = ${domain.toLowerCase()}`
+        )
+      )
       .limit(1)
     if (existing) {
       return c.json(
@@ -216,6 +228,7 @@ companiesRoutes.post('/', async (c) => {
   const [row] = await db
     .insert(companies)
     .values({
+      organizationId,
       name: body.name,
       domain: domain ?? undefined,
       website: body.website,
@@ -410,6 +423,7 @@ function agenticSearchStreamHeaders(): Record<string, string> {
 }
 
 companiesRoutes.post('/agentic-search', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = agenticSearchSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -421,7 +435,7 @@ companiesRoutes.post('/agentic-search', async (c) => {
   const companyRows = await db
     .select()
     .from(companies)
-    .where(inArray(companies.id, companyIds))
+    .where(and(eq(companies.organizationId, organizationId), inArray(companies.id, companyIds)))
 
   const companyById = new Map(companyRows.map((company) => [company.id, company]))
   const orderedCompanies = companyIds
@@ -433,7 +447,12 @@ companiesRoutes.post('/agentic-search', async (c) => {
       ? await db
           .select()
           .from(people)
-          .where(inArray(people.companyId, orderedCompanies.map((company) => company.id)))
+          .where(
+            and(
+              eq(people.organizationId, organizationId),
+              inArray(people.companyId, orderedCompanies.map((company) => company.id))
+            )
+          )
       : []
 
   const peopleByCompany = new Map<string, Array<typeof people.$inferSelect>>()
@@ -481,6 +500,7 @@ companiesRoutes.post('/agentic-search', async (c) => {
 })
 
 companiesRoutes.post('/agentic-search/stream', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = agenticSearchSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -492,7 +512,7 @@ companiesRoutes.post('/agentic-search/stream', async (c) => {
   const companyRows = await db
     .select()
     .from(companies)
-    .where(inArray(companies.id, companyIds))
+    .where(and(eq(companies.organizationId, organizationId), inArray(companies.id, companyIds)))
 
   const companyById = new Map(companyRows.map((company) => [company.id, company]))
   const orderedCompanies = companyIds
@@ -504,7 +524,12 @@ companiesRoutes.post('/agentic-search/stream', async (c) => {
       ? await db
           .select()
           .from(people)
-          .where(inArray(people.companyId, orderedCompanies.map((company) => company.id)))
+          .where(
+            and(
+              eq(people.organizationId, organizationId),
+              inArray(people.companyId, orderedCompanies.map((company) => company.id))
+            )
+          )
       : []
 
   const peopleByCompany = new Map<string, Array<typeof people.$inferSelect>>()
@@ -569,19 +594,24 @@ companiesRoutes.post('/agentic-search/stream', async (c) => {
 
 companiesRoutes.patch('/:id/outreach', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const parsed = patchOutreachSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
   const patch = parsed.data
-  const [existing] = await db.select().from(companies).where(eq(companies.id, id)).limit(1)
+  const [existing] = await db
+    .select()
+    .from(companies)
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
+    .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
 
   if (patch.outreachMailboxId) {
     const [mbox] = await db
       .select()
       .from(mailboxes)
-      .where(eq(mailboxes.id, patch.outreachMailboxId))
+      .where(and(eq(mailboxes.id, patch.outreachMailboxId), eq(mailboxes.organizationId, organizationId)))
       .limit(1)
     if (!mbox) return c.json({ error: 'mailbox not found' }, 400)
     if (mbox.status !== 'active') {
@@ -631,14 +661,19 @@ companiesRoutes.patch('/:id/outreach', async (c) => {
   const [updated] = await db
     .update(companies)
     .set(updates)
-    .where(eq(companies.id, id))
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
     .returning()
   return c.json(updated)
 })
 
 companiesRoutes.post('/:id/outreach/run', async (c) => {
   const id = c.req.param('id')
-  const [existing] = await db.select().from(companies).where(eq(companies.id, id)).limit(1)
+  const organizationId = c.get('organization').id
+  const [existing] = await db
+    .select()
+    .from(companies)
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
+    .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
   if (!existing.outreachMailboxId) {
     return c.json({ error: 'no mailbox assigned to this account' }, 400)
@@ -652,17 +687,17 @@ companiesRoutes.post('/:id/outreach/run', async (c) => {
         outreachNextWakeAt: new Date(),
         updatedAt: new Date()
       })
-      .where(eq(companies.id, id))
+      .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
   } else {
     await db
       .update(companies)
       .set({ outreachNextWakeAt: new Date(), updatedAt: new Date() })
-      .where(eq(companies.id, id))
+      .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
   }
   let workflowTriggered = false
   let workflowError: string | undefined
   try {
-    workflowTriggered = await startWorkAccount(id)
+    workflowTriggered = await startWorkAccount(id, organizationId)
   } catch (e) {
     workflowError = e instanceof Error ? e.message : String(e)
   }
@@ -676,22 +711,27 @@ companiesRoutes.post('/:id/outreach/run', async (c) => {
 })
 
 companiesRoutes.post('/outreach/start', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = bulkStartSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
   const { companyIds, mailboxId } = parsed.data
-  const [mbox] = await db.select().from(mailboxes).where(eq(mailboxes.id, mailboxId)).limit(1)
+  const [mbox] = await db
+    .select()
+    .from(mailboxes)
+    .where(and(eq(mailboxes.id, mailboxId), eq(mailboxes.organizationId, organizationId)))
+    .limit(1)
   if (!mbox) return c.json({ error: 'mailbox not found' }, 400)
   if (mbox.status !== 'active') return c.json({ error: 'mailbox is not active' }, 400)
 
-  const updated = await startWorkingCompanies(companyIds, mailboxId)
+  const updated = await startWorkingCompanies(companyIds, mailboxId, organizationId)
 
   let dispatched = 0
   const dispatchErrors: Array<{ companyId: string; error: string }> = []
   for (const id of companyIds) {
     try {
-      const ok = await startWorkAccount(id)
+      const ok = await startWorkAccount(id, organizationId)
       if (ok) dispatched += 1
     } catch (e) {
       dispatchErrors.push({ companyId: id, error: e instanceof Error ? e.message : String(e) })
@@ -700,7 +740,7 @@ companiesRoutes.post('/outreach/start', async (c) => {
   // Also kick the sweeper as a fallback so anything we couldn't dispatch
   // (e.g. RENDER_API_KEY missing locally) still gets picked up cleanly.
   try {
-    await startSweepDueAccounts()
+    await startSweepDueAccounts(organizationId)
   } catch {
     /* ignore */
   }
@@ -718,36 +758,47 @@ companiesRoutes.post('/outreach/start', async (c) => {
 
 companiesRoutes.patch('/:id/outreach/status', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const parsed = z
     .object({ status: z.enum(outreachStatusValues) })
     .safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
-  await markCompanyOutreachStatus(id, parsed.data.status, {
+  await markCompanyOutreachStatus(id, parsed.data.status, organizationId, {
     clearWake: parsed.data.status !== 'working'
   })
-  const [row] = await db.select().from(companies).where(eq(companies.id, id)).limit(1)
+  const [row] = await db
+    .select()
+    .from(companies)
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
+    .limit(1)
   return c.json(row ?? { error: 'not found' }, row ? 200 : 404)
 })
 
 companiesRoutes.get('/:id/outreach/events', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const limit = Number(c.req.query('limit') ?? '50')
-  const events = await listRecentOutreachEvents(id, Number.isFinite(limit) ? limit : 50)
+  const events = await listRecentOutreachEvents(id, organizationId, Number.isFinite(limit) ? limit : 50)
   return c.json({ data: events })
 })
 
 companiesRoutes.get('/:id/outreach/drafts', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const limit = Number(c.req.query('limit') ?? '50')
-  const drafts = await listRecentDrafts(id, Number.isFinite(limit) ? limit : 50)
+  const drafts = await listRecentDrafts(id, organizationId, Number.isFinite(limit) ? limit : 50)
   return c.json({ data: drafts })
 })
 
 companiesRoutes.get('/:id', async (c) => {
   const id = c.req.param('id')
-  const [row] = await db.select().from(companies).where(eq(companies.id, id))
+  const organizationId = c.get('organization').id
+  const [row] = await db
+    .select()
+    .from(companies)
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
   if (!row) {
     return c.json({ error: 'not found' }, 404)
   }

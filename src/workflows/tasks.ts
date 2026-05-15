@@ -14,6 +14,7 @@ import {
 import { listDueCompanyIds } from './repoOutreach.js'
 
 type SlotInput = {
+  organizationId: string
   campaignRunId: string
   campaignId: string
   campaignName: string
@@ -41,12 +42,14 @@ export const findOneProspect = task(
   async function findOneProspect(input: SlotInput): Promise<SlotResult> {
     const result = await withUsageContext(
       {
+        organizationId: input.organizationId,
         campaignId: input.campaignId,
         campaignRunId: input.campaignRunId,
         slotIndex: input.slotIndex
       },
       () =>
         findPersonAgent({
+          organizationId: input.organizationId,
           campaignId: input.campaignId,
           campaignRunId: input.campaignRunId,
           campaignName: input.campaignName,
@@ -106,7 +109,7 @@ async function runProspectCampaign(campaignRunId: string): Promise<{
   const { campaign } = row
 
   const targetCount = Math.max(1, campaign.targetCount)
-  const alreadyIds = await getCampaignDiscoveredPersonIds(campaign.id)
+  const alreadyIds = await getCampaignDiscoveredPersonIds(campaign.id, campaign.organizationId)
   const startingQualified = alreadyIds.length
   const slotsNeeded = Math.max(0, targetCount - startingQualified)
 
@@ -133,7 +136,7 @@ async function runProspectCampaign(campaignRunId: string): Promise<{
         message: 'Target already met before run'
       }
     })
-    await updateCampaignStatusIfRunning(campaign.id, 'completed')
+    await updateCampaignStatusIfRunning(campaign.id, campaign.organizationId, 'completed')
     return {
       qualifiedCount: startingQualified,
       spawned: 0,
@@ -145,6 +148,7 @@ async function runProspectCampaign(campaignRunId: string): Promise<{
   }
 
   const slots: SlotInput[] = Array.from({ length: slotsNeeded }, (_, i) => ({
+    organizationId: campaign.organizationId,
     campaignRunId,
     campaignId: campaign.id,
     campaignName: campaign.name,
@@ -198,7 +202,7 @@ async function runProspectCampaign(campaignRunId: string): Promise<{
   }
 
   // Re-read for an accurate final count (slots may have caught dups via DB).
-  const finalIds = await getCampaignDiscoveredPersonIds(campaign.id)
+  const finalIds = await getCampaignDiscoveredPersonIds(campaign.id, campaign.organizationId)
   const qualifiedCount = finalIds.length
 
   const finalStatus =
@@ -223,6 +227,7 @@ async function runProspectCampaign(campaignRunId: string): Promise<{
 
   await updateCampaignStatusIfRunning(
     campaign.id,
+    campaign.organizationId,
     finalStatus === 'succeeded' ? 'completed' : 'partial'
   )
 
@@ -250,13 +255,14 @@ export const workAccount = task(
     retry: { maxRetries: 1, waitDurationMs: 2000, backoffScaling: 2 }
   },
   async function workAccount(
-    companyId: string
+    companyId: string,
+    organizationId?: string
   ): Promise<{ companyId: string; result: WorkAccountAgentResult }> {
     requiredEnv('DATABASE_URL')
     requiredEnv('OPENROUTER_API_KEY')
-    const result = await withUsageContext({}, async () => {
+    const result = await withUsageContext({ organizationId: organizationId ?? null }, async () => {
       await attributeUsageToCompany(companyId)
-      return workAccountAgent({ companyId })
+      return workAccountAgent({ companyId, organizationId })
     })
     return { companyId, result }
   }
@@ -273,17 +279,17 @@ export const sweepDueAccounts = task(
     timeoutSeconds: 1200,
     retry: { maxRetries: 0, waitDurationMs: 1000, backoffScaling: 1 }
   },
-  async function sweepDueAccounts(): Promise<{
+  async function sweepDueAccounts(organizationId?: string): Promise<{
     swept: number
     succeeded: number
     failed: number
   }> {
     requiredEnv('DATABASE_URL')
-    const ids = await listDueCompanyIds(50)
+    const ids = await listDueCompanyIds(organizationId ?? null, 50)
     if (ids.length === 0) {
       return { swept: 0, succeeded: 0, failed: 0 }
     }
-    const settled = await Promise.allSettled(ids.map((id) => workAccount(id)))
+    const settled = await Promise.allSettled(ids.map((id) => workAccount(id, organizationId)))
     let succeeded = 0
     let failed = 0
     for (const s of settled) {

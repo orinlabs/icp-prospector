@@ -11,3 +11,10 @@ export function isAuthPublicApiPath(pathname: string): boolean {
   if (pathname === '/mailboxes/oauth/callback') return true
   return false
 }
+
+export function isOrganizationSetupApiPath(pathname: string): boolean {
+  if (pathname === '/organizations') return true
+  if (pathname === '/organizations/switch') return true
+  if (pathname.startsWith('/organizations/invites/')) return true
+  return false
+}

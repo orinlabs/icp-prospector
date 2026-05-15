@@ -16,6 +16,7 @@ import { z } from 'zod'
 import { db } from '../db/client.js'
 import { companies, discoveryEvents, people } from '../db/schema.js'
 import { openRouterReasoningConfig } from '../lib/openrouter.js'
+import type { AppVariables } from '../lib/orgs.js'
 import { requiredEnv } from '../workflows/repo.js'
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
@@ -230,9 +231,10 @@ function agenticSearchStreamHeaders(): Record<string, string> {
   }
 }
 
-export const peopleRoutes = new Hono()
+export const peopleRoutes = new Hono<{ Variables: AppVariables }>()
 
 peopleRoutes.get('/', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = querySchema.safeParse({
     has_email: c.req.query('has_email') ?? undefined,
     has_linkedin: c.req.query('has_linkedin') ?? undefined,
@@ -262,7 +264,7 @@ peopleRoutes.get('/', async (c) => {
     offset
   } = parsed.data
 
-  const filters: SQL[] = []
+  const filters: SQL[] = [eq(people.organizationId, organizationId)]
   if (has_email === 'true') {
     filters.push(isNotNull(people.email))
   }
@@ -287,12 +289,12 @@ peopleRoutes.get('/', async (c) => {
   }
   if (campaign_id) {
     filters.push(
-      sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.campaignId} = ${campaign_id})`
+      sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.organizationId} = ${organizationId} and ${discoveryEvents.campaignId} = ${campaign_id})`
     )
   }
   if (campaign_run_id) {
     filters.push(
-      sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.metadata}->>'campaignRunId' = ${campaign_run_id})`
+      sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.organizationId} = ${organizationId} and ${discoveryEvents.metadata}->>'campaignRunId' = ${campaign_run_id})`
     )
   }
 
@@ -342,6 +344,7 @@ peopleRoutes.get('/', async (c) => {
 })
 
 peopleRoutes.post('/', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = createPerson.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -351,7 +354,7 @@ peopleRoutes.post('/', async (c) => {
   const [company] = await db
     .select({ id: companies.id })
     .from(companies)
-    .where(eq(companies.id, b.companyId))
+    .where(and(eq(companies.id, b.companyId), eq(companies.organizationId, organizationId)))
     .limit(1)
   if (!company) {
     return c.json({ error: 'company not found' }, 400)
@@ -362,6 +365,7 @@ peopleRoutes.post('/', async (c) => {
   const [row] = await db
     .insert(people)
     .values({
+      organizationId,
       companyId: b.companyId,
       fullName: b.fullName,
       nameNormalized: nameNorm ?? undefined,
@@ -383,6 +387,7 @@ peopleRoutes.post('/', async (c) => {
 })
 
 peopleRoutes.post('/agentic-search', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = agenticSearchSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -394,7 +399,7 @@ peopleRoutes.post('/agentic-search', async (c) => {
   const personRows = await db
     .select()
     .from(people)
-    .where(inArray(people.id, personIds))
+    .where(and(eq(people.organizationId, organizationId), inArray(people.id, personIds)))
 
   const personById = new Map(personRows.map((person) => [person.id, person]))
   const orderedPeople = personIds
@@ -406,7 +411,10 @@ peopleRoutes.post('/agentic-search', async (c) => {
     .filter((id): id is string => Boolean(id))
   const companyRows =
     companyIds.length > 0
-      ? await db.select().from(companies).where(inArray(companies.id, companyIds))
+      ? await db
+          .select()
+          .from(companies)
+          .where(and(eq(companies.organizationId, organizationId), inArray(companies.id, companyIds)))
       : []
   const companyById = new Map(companyRows.map((company) => [company.id, company]))
 
@@ -447,6 +455,7 @@ peopleRoutes.post('/agentic-search', async (c) => {
 })
 
 peopleRoutes.post('/agentic-search/stream', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = agenticSearchSchema.safeParse(await c.req.json())
   if (!parsed.success) {
     return c.json({ error: parsed.error.flatten() }, 400)
@@ -458,7 +467,7 @@ peopleRoutes.post('/agentic-search/stream', async (c) => {
   const personRows = await db
     .select()
     .from(people)
-    .where(inArray(people.id, personIds))
+    .where(and(eq(people.organizationId, organizationId), inArray(people.id, personIds)))
 
   const personById = new Map(personRows.map((person) => [person.id, person]))
   const orderedPeople = personIds
@@ -470,7 +479,10 @@ peopleRoutes.post('/agentic-search/stream', async (c) => {
     .filter((id): id is string => Boolean(id))
   const companyRows =
     companyIds.length > 0
-      ? await db.select().from(companies).where(inArray(companies.id, companyIds))
+      ? await db
+          .select()
+          .from(companies)
+          .where(and(eq(companies.organizationId, organizationId), inArray(companies.id, companyIds)))
       : []
   const companyById = new Map(companyRows.map((company) => [company.id, company]))
 
@@ -528,10 +540,11 @@ peopleRoutes.post('/agentic-search/stream', async (c) => {
 
 peopleRoutes.get('/:id', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const [row] = await db
     .select(peopleColumns)
     .from(people)
-    .where(eq(people.id, id))
+    .where(and(eq(people.id, id), eq(people.organizationId, organizationId)))
   if (!row) {
     return c.json({ error: 'not found' }, 404)
   }

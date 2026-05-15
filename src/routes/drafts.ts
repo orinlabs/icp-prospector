@@ -6,6 +6,7 @@ import { db } from '../db/client.js'
 import { companies, mailboxes, outreachDrafts, people } from '../db/schema.js'
 import { sendMessage } from '../lib/gmail/send.js'
 import { appendMailboxSignature, appendMailboxSignatureHtml } from '../lib/mailboxSignature.js'
+import type { AppVariables } from '../lib/orgs.js'
 import { startWorkAccount } from '../lib/workflowTrigger.js'
 import {
   appendCompanyOutreachEmailInstructions,
@@ -19,7 +20,7 @@ import {
 } from '../workflows/repoOutreach.js'
 import { extractDraftFeedbackInstructionLines } from '../lib/extractDraftFeedbackInstructions.js'
 
-export const draftsRoutes = new Hono()
+export const draftsRoutes = new Hono<{ Variables: AppVariables }>()
 
 const listQuerySchema = z.object({
   status: z.string().optional(),
@@ -51,6 +52,7 @@ const discardBodySchema = z.object({
 
 async function maybeAppendEmailInstructionsFromFeedback(input: {
   reviewNotes: string
+  organizationId: string
   companyId: string
   mailboxId: string
   saveToAccount: boolean
@@ -62,10 +64,10 @@ async function maybeAppendEmailInstructionsFromFeedback(input: {
   try {
     const lines = await extractDraftFeedbackInstructionLines(input.reviewNotes)
     if (input.saveToAccount) {
-      await appendCompanyOutreachEmailInstructions(input.companyId, lines)
+      await appendCompanyOutreachEmailInstructions(input.companyId, input.organizationId, lines)
     }
     if (input.saveToMailbox) {
-      await appendMailboxOutreachEmailInstructions(input.mailboxId, lines)
+      await appendMailboxOutreachEmailInstructions(input.mailboxId, input.organizationId, lines)
     }
     return { lines }
   } catch (e) {
@@ -75,6 +77,7 @@ async function maybeAppendEmailInstructionsFromFeedback(input: {
 }
 
 draftsRoutes.get('/', async (c) => {
+  const organizationId = c.get('organization').id
   const parsed = listQuerySchema.safeParse({
     status: c.req.query('status') ?? 'pending_review',
     mailboxId: c.req.query('mailboxId') ?? undefined,
@@ -87,6 +90,7 @@ draftsRoutes.get('/', async (c) => {
   }
   const { status, mailboxId, companyId, limit, offset } = parsed.data
   const result = await listDrafts({
+    organizationId,
     status: status || null,
     mailboxId: mailboxId ?? null,
     companyId: companyId ?? null,
@@ -119,6 +123,7 @@ draftsRoutes.get('/', async (c) => {
 
 draftsRoutes.get('/:id', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const [row] = await db
     .select({
       draft: outreachDrafts,
@@ -130,7 +135,7 @@ draftsRoutes.get('/:id', async (c) => {
     .leftJoin(companies, eq(companies.id, outreachDrafts.companyId))
     .leftJoin(mailboxes, eq(mailboxes.id, outreachDrafts.mailboxId))
     .leftJoin(people, eq(people.id, outreachDrafts.personId))
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .limit(1)
   if (!row) return c.json({ error: 'not found' }, 404)
 
@@ -153,6 +158,7 @@ draftsRoutes.get('/:id', async (c) => {
         .where(
           and(
             eq(outreachDrafts.companyId, row.company.id),
+            eq(outreachDrafts.organizationId, organizationId),
             eq(outreachDrafts.status, 'sent')
           )
         )
@@ -179,27 +185,29 @@ draftsRoutes.get('/:id', async (c) => {
 
 draftsRoutes.patch('/:id', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const parsed = patchSchema.safeParse(await c.req.json())
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400)
   const [existing] = await db
     .select()
     .from(outreachDrafts)
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
   if (existing.status !== 'pending_review') {
     return c.json({ error: `cannot edit draft in status ${existing.status}` }, 409)
   }
-  const updated = await patchDraft(id, parsed.data)
+  const updated = await patchDraft(id, organizationId, parsed.data)
   return c.json(updated)
 })
 
 draftsRoutes.post('/:id/approve', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const [existing] = await db
     .select()
     .from(outreachDrafts)
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
   if (existing.status !== 'pending_review' && existing.status !== 'failed') {
@@ -210,13 +218,13 @@ draftsRoutes.post('/:id/approve', async (c) => {
   await db
     .update(outreachDrafts)
     .set({ status: 'approved', sendError: null, updatedAt: new Date() })
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
 
   try {
     const [mailbox] = await db
       .select({ signature: mailboxes.signature })
       .from(mailboxes)
-      .where(eq(mailboxes.id, existing.mailboxId))
+      .where(and(eq(mailboxes.id, existing.mailboxId), eq(mailboxes.organizationId, organizationId)))
       .limit(1)
     const signature = mailbox?.signature ?? null
     const outgoingBody = appendMailboxSignature(existing.body, signature)
@@ -233,8 +241,9 @@ draftsRoutes.post('/:id/approve', async (c) => {
       bodyHtml: outgoingBodyHtml,
       threadId: existing.gmailThreadId
     })
-    const updated = await markDraftSent(id, sent)
+    const updated = await markDraftSent(id, organizationId, sent)
     await appendOutreachEvent({
+      organizationId,
       companyId: existing.companyId,
       kind: 'email_sent',
       summary: `Email sent to ${existing.toEmail}: ${existing.subject}`,
@@ -249,8 +258,9 @@ draftsRoutes.post('/:id/approve', async (c) => {
     return c.json(updated)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    const failed = await markDraftFailed(id, message)
+    const failed = await markDraftFailed(id, organizationId, message)
     await appendOutreachEvent({
+      organizationId,
       companyId: existing.companyId,
       kind: 'error',
       summary: `Send failed: ${message.slice(0, 200)}`,
@@ -262,13 +272,14 @@ draftsRoutes.post('/:id/approve', async (c) => {
 
 draftsRoutes.post('/:id/discard', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const parsed = discardBodySchema.safeParse(await c.req.json().catch(() => ({})))
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400)
   const body = parsed.data
   const [existing] = await db
     .select()
     .from(outreachDrafts)
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
   const notes = body.reviewNotes?.trim() ?? ''
@@ -278,14 +289,16 @@ draftsRoutes.post('/:id/discard', async (c) => {
   if (notes && (saveAccount || saveMailbox)) {
     instructionAppend = await maybeAppendEmailInstructionsFromFeedback({
       reviewNotes: notes,
+      organizationId,
       companyId: existing.companyId,
       mailboxId: existing.mailboxId,
       saveToAccount: saveAccount,
       saveToMailbox: saveMailbox
     })
   }
-  const updated = await markDraftDiscarded(id, notes || null)
+  const updated = await markDraftDiscarded(id, organizationId, notes || null)
   await appendOutreachEvent({
+    organizationId,
     companyId: existing.companyId,
     kind: 'note',
     summary: `Operator discarded draft: ${existing.subject}`,
@@ -296,12 +309,13 @@ draftsRoutes.post('/:id/discard', async (c) => {
 
 draftsRoutes.post('/:id/regenerate', async (c) => {
   const id = c.req.param('id')
+  const organizationId = c.get('organization').id
   const parsed = regenerateSchema.safeParse(await c.req.json())
   if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400)
   const [existing] = await db
     .select()
     .from(outreachDrafts)
-    .where(eq(outreachDrafts.id, id))
+    .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .limit(1)
   if (!existing) return c.json({ error: 'not found' }, 404)
   const saveAccount = Boolean(parsed.data.saveInstructionsToAccount)
@@ -310,14 +324,16 @@ draftsRoutes.post('/:id/regenerate', async (c) => {
   if (saveAccount || saveMailbox) {
     instructionAppend = await maybeAppendEmailInstructionsFromFeedback({
       reviewNotes: parsed.data.reviewNotes,
+      organizationId,
       companyId: existing.companyId,
       mailboxId: existing.mailboxId,
       saveToAccount: saveAccount,
       saveToMailbox: saveMailbox
     })
   }
-  const discarded = await markDraftDiscarded(id, parsed.data.reviewNotes)
+  const discarded = await markDraftDiscarded(id, organizationId, parsed.data.reviewNotes)
   await appendOutreachEvent({
+    organizationId,
     companyId: existing.companyId,
     kind: 'decision',
     summary: `Operator asked for a rewrite. Notes: ${parsed.data.reviewNotes.slice(0, 200)}`,
@@ -326,12 +342,12 @@ draftsRoutes.post('/:id/regenerate', async (c) => {
   await db
     .update(companies)
     .set({ outreachNextWakeAt: new Date(), updatedAt: new Date() })
-    .where(eq(companies.id, existing.companyId))
+    .where(and(eq(companies.id, existing.companyId), eq(companies.organizationId, organizationId)))
 
   let workflowTriggered = false
   let workflowError: string | undefined
   try {
-    workflowTriggered = await startWorkAccount(existing.companyId)
+    workflowTriggered = await startWorkAccount(existing.companyId, organizationId)
   } catch (e) {
     workflowError = e instanceof Error ? e.message : String(e)
   }

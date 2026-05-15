@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, or, sql } from 'drizzle-orm'
+import { and, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm'
 
 import { db } from '../db/client.js'
 import { campaignRuns, campaigns, companies, discoveryEvents, people } from '../db/schema.js'
@@ -262,6 +262,7 @@ export type PersonSummary = {
 }
 
 export async function searchPeople(input: {
+  organizationId: string
   query?: string | null
   companyName?: string | null
   campaignId?: string | null
@@ -272,28 +273,27 @@ export async function searchPeople(input: {
   const limit = Math.min(50, Math.max(1, input.limit ?? 20))
   const offset = Math.max(0, input.offset ?? 0)
 
-  const filters = []
+  const filters: SQL[] = [eq(people.organizationId, input.organizationId)]
   const q = cleanNullable(input.query)
   if (q) {
     const like = `%${q}%`
-    filters.push(
-      or(
-        ilike(people.fullName, like),
-        ilike(people.title, like),
-        ilike(people.context, like),
-        ilike(people.notes, like)
-      )
+    const search = or(
+      ilike(people.fullName, like),
+      ilike(people.title, like),
+      ilike(people.context, like),
+      ilike(people.notes, like)
     )
+    if (search) filters.push(search)
   }
   const companyName = cleanNullable(input.companyName)
   if (companyName) {
     filters.push(
-      sql`exists (select 1 from ${companies} where ${companies.id} = ${people.companyId} and lower(${companies.name}) like ${'%' + companyName.toLowerCase() + '%'})`
+      sql`exists (select 1 from ${companies} where ${companies.id} = ${people.companyId} and ${companies.organizationId} = ${input.organizationId} and lower(${companies.name}) like ${'%' + companyName.toLowerCase() + '%'})`
     )
   }
   if (input.campaignOnly && input.campaignId) {
     filters.push(
-      sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.campaignId} = ${input.campaignId})`
+      sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.organizationId} = ${input.organizationId} and ${discoveryEvents.campaignId} = ${input.campaignId})`
     )
   }
   const where = filters.length ? and(...filters) : undefined
@@ -323,12 +323,12 @@ export async function searchPeople(input: {
   return { rows, total: Number(count) }
 }
 
-export async function getPerson(id: string) {
+export async function getPerson(id: string, organizationId: string) {
   const [row] = await db
     .select()
     .from(people)
     .leftJoin(companies, eq(companies.id, people.companyId))
-    .where(eq(people.id, id))
+    .where(and(eq(people.id, id), eq(people.organizationId, organizationId)))
     .limit(1)
   if (!row) return null
   return {
@@ -349,6 +349,7 @@ export type CompanySummary = {
 }
 
 export async function searchCompanies(input: {
+  organizationId: string
   query?: string | null
   limit?: number
   offset?: number
@@ -356,11 +357,12 @@ export async function searchCompanies(input: {
   const limit = Math.min(50, Math.max(1, input.limit ?? 20))
   const offset = Math.max(0, input.offset ?? 0)
 
-  const filters = []
+  const filters: SQL[] = [eq(companies.organizationId, input.organizationId)]
   const q = cleanNullable(input.query)
   if (q) {
     const like = `%${q}%`
-    filters.push(or(ilike(companies.name, like), ilike(companies.domain, like), ilike(companies.notes, like)))
+    const search = or(ilike(companies.name, like), ilike(companies.domain, like), ilike(companies.notes, like))
+    if (search) filters.push(search)
   }
   const where = filters.length ? and(...filters) : undefined
 
@@ -387,32 +389,40 @@ export async function searchCompanies(input: {
   return { rows, total: Number(count) }
 }
 
-export async function getCompany(id: string) {
-  const [row] = await db.select().from(companies).where(eq(companies.id, id)).limit(1)
+export async function getCompany(id: string, organizationId: string) {
+  const [row] = await db
+    .select()
+    .from(companies)
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
+    .limit(1)
   return row ?? null
 }
 
-export async function appendCompanyNotes(companyId: string, notes: string | null | undefined): Promise<void> {
+export async function appendCompanyNotes(
+  companyId: string,
+  organizationId: string,
+  notes: string | null | undefined
+): Promise<void> {
   const next = cleanNullable(notes)
   if (!next) return
   const [existing] = await db
     .select({ notes: companies.notes })
     .from(companies)
-    .where(eq(companies.id, companyId))
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
     .limit(1)
   const merged = mergeNotes(existing?.notes, next)
   if (!merged) return
   await db
     .update(companies)
     .set({ notes: merged, updatedAt: new Date() })
-    .where(eq(companies.id, companyId))
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)))
 }
 
-export async function getPersonCompanyId(personId: string): Promise<string | null> {
+export async function getPersonCompanyId(personId: string, organizationId: string): Promise<string | null> {
   const [row] = await db
     .select({ companyId: people.companyId })
     .from(people)
-    .where(eq(people.id, personId))
+    .where(and(eq(people.id, personId), eq(people.organizationId, organizationId)))
     .limit(1)
   return row?.companyId ?? null
 }
@@ -428,7 +438,7 @@ export type CompanyDraft = {
   notes?: string | null
 }
 
-export async function upsertCompany(draft: CompanyDraft): Promise<string | null> {
+export async function upsertCompany(draft: CompanyDraft, organizationId: string): Promise<string | null> {
   const name = cleanNullable(draft.name)
   if (!name) return null
 
@@ -439,7 +449,9 @@ export async function upsertCompany(draft: CompanyDraft): Promise<string | null>
     const [existing] = await db
       .select()
       .from(companies)
-      .where(sql`lower(trim(${companies.domain})) = ${domain}`)
+      .where(
+        and(eq(companies.organizationId, organizationId), sql`lower(trim(${companies.domain})) = ${domain}`)
+      )
       .limit(1)
     if (existing) {
       const notes = mergeNotes(existing.notes, draft.notes)
@@ -452,7 +464,7 @@ export async function upsertCompany(draft: CompanyDraft): Promise<string | null>
           notes,
           updatedAt: new Date()
         })
-        .where(eq(companies.id, existing.id))
+        .where(and(eq(companies.id, existing.id), eq(companies.organizationId, organizationId)))
         .returning()
       return updated.id
     }
@@ -461,7 +473,9 @@ export async function upsertCompany(draft: CompanyDraft): Promise<string | null>
   const [byName] = await db
     .select()
     .from(companies)
-    .where(sql`lower(trim(${companies.name})) = ${name.toLowerCase()}`)
+    .where(
+      and(eq(companies.organizationId, organizationId), sql`lower(trim(${companies.name})) = ${name.toLowerCase()}`)
+    )
     .limit(1)
   if (byName) {
     const notes = mergeNotes(byName.notes, draft.notes)
@@ -474,7 +488,7 @@ export async function upsertCompany(draft: CompanyDraft): Promise<string | null>
           notes,
           updatedAt: new Date()
         })
-        .where(eq(companies.id, byName.id))
+        .where(and(eq(companies.id, byName.id), eq(companies.organizationId, organizationId)))
         .returning()
       return updated.id
     }
@@ -489,6 +503,7 @@ export async function upsertCompany(draft: CompanyDraft): Promise<string | null>
     const [created] = await db
       .insert(companies)
       .values({
+        organizationId,
         name,
         domain: domain ?? undefined,
         website,
@@ -506,8 +521,8 @@ export async function upsertCompany(draft: CompanyDraft): Promise<string | null>
       .from(companies)
       .where(
         domain
-          ? sql`lower(trim(${companies.domain})) = ${domain}`
-          : sql`lower(trim(${companies.name})) = ${name.toLowerCase()}`
+          ? and(eq(companies.organizationId, organizationId), sql`lower(trim(${companies.domain})) = ${domain}`)
+          : and(eq(companies.organizationId, organizationId), sql`lower(trim(${companies.name})) = ${name.toLowerCase()}`)
       )
       .limit(1)
     if (existing) return existing.id
@@ -536,6 +551,7 @@ export type UpsertPersonResult =
 
 export async function upsertPerson(
   draft: PersonDraft,
+  organizationId: string,
   campaignId: string,
   companyId: string
 ): Promise<UpsertPersonResult> {
@@ -556,7 +572,7 @@ export async function upsertPerson(
     const [existing] = await db
       .select()
       .from(people)
-      .where(sql`lower(trim(${people.email})) = ${email}`)
+      .where(and(eq(people.organizationId, organizationId), sql`lower(trim(${people.email})) = ${email}`))
       .limit(1)
     if (existing) return { ok: false, reason: 'duplicate', personId: existing.id }
   }
@@ -564,7 +580,7 @@ export async function upsertPerson(
     const [existing] = await db
       .select()
       .from(people)
-      .where(eq(people.linkedinUrl, linkedinUrl))
+      .where(and(eq(people.organizationId, organizationId), eq(people.linkedinUrl, linkedinUrl)))
       .limit(1)
     if (existing) return { ok: false, reason: 'duplicate', personId: existing.id }
   }
@@ -572,7 +588,13 @@ export async function upsertPerson(
     const [existing] = await db
       .select()
       .from(people)
-      .where(and(eq(people.companyId, companyId), eq(people.nameNormalized, nameNormalized)))
+      .where(
+        and(
+          eq(people.organizationId, organizationId),
+          eq(people.companyId, companyId),
+          eq(people.nameNormalized, nameNormalized)
+        )
+      )
       .limit(1)
     if (existing) return { ok: false, reason: 'duplicate', personId: existing.id }
   }
@@ -581,6 +603,7 @@ export async function upsertPerson(
     const [created] = await db
       .insert(people)
       .values({
+        organizationId,
         companyId,
         fullName,
         nameNormalized: nameNormalized ?? undefined,
@@ -607,7 +630,7 @@ export async function upsertPerson(
       const [existing] = await db
         .select()
         .from(people)
-        .where(sql`lower(trim(${people.email})) = ${email}`)
+        .where(and(eq(people.organizationId, organizationId), sql`lower(trim(${people.email})) = ${email}`))
         .limit(1)
       if (existing) return { ok: false, reason: 'duplicate', personId: existing.id }
     }
@@ -615,7 +638,7 @@ export async function upsertPerson(
       const [existing] = await db
         .select()
         .from(people)
-        .where(eq(people.linkedinUrl, linkedinUrl))
+        .where(and(eq(people.organizationId, organizationId), eq(people.linkedinUrl, linkedinUrl)))
         .limit(1)
       if (existing) return { ok: false, reason: 'duplicate', personId: existing.id }
     }
@@ -624,6 +647,7 @@ export async function upsertPerson(
 }
 
 export async function recordDiscoveryEvent(input: {
+  organizationId: string
   campaignId: string
   campaignRunId: string
   personId: string
@@ -638,6 +662,7 @@ export async function recordDiscoveryEvent(input: {
     .where(
       and(
         eq(discoveryEvents.campaignId, input.campaignId),
+        eq(discoveryEvents.organizationId, input.organizationId),
         eq(discoveryEvents.personId, input.personId),
         eq(discoveryEvents.sourceType, 'agent'),
         eq(discoveryEvents.sourceQuery, input.sourceQuery),
@@ -650,6 +675,7 @@ export async function recordDiscoveryEvent(input: {
   if (existing) return
 
   await db.insert(discoveryEvents).values({
+    organizationId: input.organizationId,
     campaignId: input.campaignId,
     personId: input.personId,
     sourceType: 'agent',
@@ -677,11 +703,14 @@ export async function getCampaignRunWithCampaign(campaignRunId: string) {
   return row ?? null
 }
 
-export async function getCampaignDiscoveredPersonIds(campaignId: string): Promise<string[]> {
+export async function getCampaignDiscoveredPersonIds(
+  campaignId: string,
+  organizationId: string
+): Promise<string[]> {
   const rows = await db
     .selectDistinct({ personId: discoveryEvents.personId })
     .from(discoveryEvents)
-    .where(eq(discoveryEvents.campaignId, campaignId))
+    .where(and(eq(discoveryEvents.campaignId, campaignId), eq(discoveryEvents.organizationId, organizationId)))
   return rows.map((r) => r.personId).filter((id): id is string => Boolean(id))
 }
 
@@ -703,13 +732,18 @@ export async function updateRunCheckpoint(
 
 export async function updateCampaignStatusIfRunning(
   campaignId: string,
+  organizationId: string,
   nextStatus: string
 ): Promise<void> {
   await db
     .update(campaigns)
     .set({ status: nextStatus, updatedAt: new Date() })
     .where(
-      and(eq(campaigns.id, campaignId), sql`${campaigns.status} in ('running', 'failed')`)
+      and(
+        eq(campaigns.id, campaignId),
+        eq(campaigns.organizationId, organizationId),
+        sql`${campaigns.status} in ('running', 'failed')`
+      )
     )
 }
 
@@ -725,6 +759,6 @@ export async function markRunFailed(campaignRunId: string, message: string): Pro
     })
     .where(eq(campaignRuns.id, campaignRunId))
   if (run) {
-    await updateCampaignStatusIfRunning(run.campaignId, 'failed')
+    await updateCampaignStatusIfRunning(run.campaignId, run.organizationId, 'failed')
   }
 }

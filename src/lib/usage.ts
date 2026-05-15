@@ -15,6 +15,7 @@ import { usageEvents } from '../db/schema.js'
  * spent on Person Y at Company Z."
  */
 type UsageContextData = {
+  organizationId: string | null
   campaignId: string | null
   campaignRunId: string | null
   slotIndex: number | null
@@ -26,6 +27,7 @@ const storage = new AsyncLocalStorage<UsageContextData>()
 
 export function withUsageContext<T>(
   ctx: {
+    organizationId?: string | null
     campaignId?: string | null
     campaignRunId?: string | null
     slotIndex?: number | null
@@ -33,6 +35,7 @@ export function withUsageContext<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   const data: UsageContextData = {
+    organizationId: ctx.organizationId ?? null,
     campaignId: ctx.campaignId ?? null,
     campaignRunId: ctx.campaignRunId ?? null,
     slotIndex: ctx.slotIndex ?? null,
@@ -57,6 +60,7 @@ export type RecordUsageInput = {
 
 export async function recordUsageEvent(input: RecordUsageInput): Promise<void> {
   const ctx = storage.getStore()
+  if (!ctx?.organizationId) return
   try {
     const [row] = await db
       .insert(usageEvents)
@@ -73,6 +77,7 @@ export async function recordUsageEvent(input: RecordUsageInput): Promise<void> {
             ? input.costUsd.toFixed(6)
             : undefined,
         estimated: input.estimated ?? false,
+        organizationId: ctx?.organizationId ?? undefined,
         campaignId: ctx?.campaignId ?? undefined,
         campaignRunId: ctx?.campaignRunId ?? undefined,
         slotIndex: ctx?.slotIndex ?? undefined,

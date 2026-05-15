@@ -1,19 +1,17 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 
-const ALLOWED_DOMAIN = 'orinlabs.ai'
-
 export function normalizeAppEmail(raw: string): string {
   return raw.trim().toLowerCase()
 }
 
-export function assertOrinlabsEmail(email: string): void {
+export function assertValidAppEmail(email: string): void {
   const normalized = normalizeAppEmail(email)
   const parts = normalized.split('@')
   if (parts.length !== 2 || parts[0].length === 0) {
     throw new Error('Invalid email address')
   }
-  if (parts[1] !== ALLOWED_DOMAIN) {
-    throw new Error('Only @orinlabs.ai accounts can sign in')
+  if (!parts[1] || !parts[1].includes('.')) {
+    throw new Error('Use your work email address')
   }
 }
 

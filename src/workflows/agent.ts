@@ -62,6 +62,7 @@ export type FindPersonAgentResult =
   | { status: 'error'; error: string; steps: number }
 
 type AgentInput = {
+  organizationId: string
   campaignId: string
   campaignRunId: string
   campaignName: string
@@ -313,6 +314,7 @@ function buildSystemPrompt(input: AgentInput): string {
 }
 
 type ToolDispatchContext = {
+  organizationId: string
   campaignId: string
   campaignRunId: string
   used: {
@@ -352,6 +354,7 @@ async function dispatchTool(
     switch (name) {
       case 'search_existing_people': {
         const { rows, total } = await searchPeople({
+          organizationId: ctx.organizationId,
           query: typeof args.query === 'string' ? args.query : null,
           companyName: typeof args.company_name === 'string' ? args.company_name : null,
           campaignOnly: Boolean(args.campaign_only),
@@ -379,7 +382,7 @@ async function dispatchTool(
         if (!id) {
           return { kind: 'continue', content: JSON.stringify({ error: 'id required' }) }
         }
-        const person = await getPerson(id)
+        const person = await getPerson(id, ctx.organizationId)
         if (!person) return { kind: 'continue', content: JSON.stringify({ error: 'not_found' }) }
         return {
           kind: 'continue',
@@ -408,6 +411,7 @@ async function dispatchTool(
       }
       case 'search_existing_companies': {
         const { rows, total } = await searchCompanies({
+          organizationId: ctx.organizationId,
           query: typeof args.query === 'string' ? args.query : null,
           limit: typeof args.limit === 'number' ? args.limit : 20,
           offset: typeof args.offset === 'number' ? args.offset : 0
@@ -432,7 +436,7 @@ async function dispatchTool(
         if (!id) {
           return { kind: 'continue', content: JSON.stringify({ error: 'id required' }) }
         }
-        const company = await getCompany(id)
+        const company = await getCompany(id, ctx.organizationId)
         if (!company) return { kind: 'continue', content: JSON.stringify({ error: 'not_found' }) }
         return {
           kind: 'continue',
@@ -519,17 +523,20 @@ async function dispatchTool(
               })
             }
           }
-          companyId = await upsertCompany({
-            name: companyDraftRaw.name as string,
-            domain: (companyDraftRaw.domain as string | null | undefined) ?? null,
-            website: (companyDraftRaw.website as string | null | undefined) ?? null,
-            industry: (companyDraftRaw.industry as string | null | undefined) ?? null,
-            hqLocation: (companyDraftRaw.hq_location as string | null | undefined) ?? null,
-            notes:
-              (companyDraftRaw.notes as string | null | undefined) ??
-              (args.company_notes as string | null | undefined) ??
-              null
-          })
+          companyId = await upsertCompany(
+            {
+              name: companyDraftRaw.name as string,
+              domain: (companyDraftRaw.domain as string | null | undefined) ?? null,
+              website: (companyDraftRaw.website as string | null | undefined) ?? null,
+              industry: (companyDraftRaw.industry as string | null | undefined) ?? null,
+              hqLocation: (companyDraftRaw.hq_location as string | null | undefined) ?? null,
+              notes:
+                (companyDraftRaw.notes as string | null | undefined) ??
+                (args.company_notes as string | null | undefined) ??
+                null
+            },
+            ctx.organizationId
+          )
           if (!companyId) {
             return {
               kind: 'continue',
@@ -540,14 +547,18 @@ async function dispatchTool(
             }
           }
         } else {
-          const existing = await getCompany(companyId)
+          const existing = await getCompany(companyId, ctx.organizationId)
           if (!existing) {
             return {
               kind: 'continue',
               content: JSON.stringify({ error: 'company_id not found; try search_existing_companies' })
             }
           }
-          await appendCompanyNotes(companyId, args.company_notes as string | null | undefined)
+          await appendCompanyNotes(
+            companyId,
+            ctx.organizationId,
+            args.company_notes as string | null | undefined
+          )
         }
 
         const keywords = Array.isArray(args.icp_keywords)
@@ -568,6 +579,7 @@ async function dispatchTool(
             context,
             icpKeywords: keywords
           },
+          ctx.organizationId,
           ctx.campaignId,
           companyId
         )
@@ -576,7 +588,7 @@ async function dispatchTool(
           if (result.reason === 'duplicate') {
             // Attribute the slot's usage to the matched person so we can see
             // how much we spent re-discovering somebody we already had.
-            const dupCompanyId = await getPersonCompanyId(result.personId)
+            const dupCompanyId = await getPersonCompanyId(result.personId, ctx.organizationId)
             await attributeUsageToPerson(result.personId, dupCompanyId)
             return {
               kind: 'terminate_duplicate',
@@ -601,6 +613,7 @@ async function dispatchTool(
           (typeof args.source_url === 'string' ? args.source_url : null) ?? ctx.lastSourceUrlHinted
 
         await recordDiscoveryEvent({
+          organizationId: ctx.organizationId,
           campaignId: ctx.campaignId,
           campaignRunId: ctx.campaignRunId,
           personId: result.personId,
@@ -704,8 +717,9 @@ async function callOpenRouter(messages: ChatMessage[]): Promise<{
 
 export async function findPersonAgent(input: AgentInput): Promise<FindPersonAgentResult> {
   // Seed: list already-discovered for this campaign so the model can plan around it.
-  const alreadyIds = await getCampaignDiscoveredPersonIds(input.campaignId)
+  const alreadyIds = await getCampaignDiscoveredPersonIds(input.campaignId, input.organizationId)
   const preview = await searchPeople({
+    organizationId: input.organizationId,
     campaignOnly: true,
     campaignId: input.campaignId,
     limit: 20,
@@ -734,6 +748,7 @@ export async function findPersonAgent(input: AgentInput): Promise<FindPersonAgen
   ]
 
   const ctx: ToolDispatchContext = {
+    organizationId: input.organizationId,
     campaignId: input.campaignId,
     campaignRunId: input.campaignRunId,
     used: { webSearches: 0, fetchUrls: 0 },
