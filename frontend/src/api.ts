@@ -38,12 +38,24 @@ export type Campaign = {
   updatedAt: string
 }
 
+export type Company = {
+  id: string
+  name: string
+  domain: string | null
+  website: string | null
+  industry: string | null
+  employeeRange: string | null
+  hqLocation: string | null
+  createdAt: string
+}
+
 export type Person = {
   id: string
   companyId: string | null
   fullName: string | null
   email: string | null
   linkedinUrl: string | null
+  title: string | null
   lifecycleStatus: string
   createdAt: string
 }
