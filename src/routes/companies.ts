@@ -1,9 +1,20 @@
-import { desc, eq, inArray, sql } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  SQL
+} from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 
 import { db } from '../db/client.js'
-import { companies, mailboxes, people } from '../db/schema.js'
+import { companies, mailboxes, outreachDrafts, people } from '../db/schema.js'
 import { openRouterReasoningConfig } from '../lib/openrouter.js'
 import { startSweepDueAccounts, startWorkAccount } from '../lib/workflowTrigger.js'
 import {
@@ -38,7 +49,21 @@ function deriveDomain(value: string | null | undefined): string | null {
     .toLowerCase()
 }
 
+const outreachStatusValues = ['dormant', 'working', 'paused', 'completed', 'dead'] as const
+
 const querySchema = z.object({
+  q: z
+    .string()
+    .optional()
+    .transform((s) => {
+      const t = (s ?? '').trim()
+      return t.length === 0 ? undefined : t.slice(0, 200)
+    }),
+  outreach_status: z.enum(outreachStatusValues).optional(),
+  mailbox_id: z.string().uuid().optional(),
+  has_mailbox: z.enum(['true', 'false']).optional(),
+  has_people: z.enum(['true', 'false']).optional(),
+  pending_drafts: z.enum(['true', 'false']).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
   offset: z.coerce.number().int().min(0).optional().default(0)
 })
@@ -47,6 +72,12 @@ export const companiesRoutes = new Hono()
 
 companiesRoutes.get('/', async (c) => {
   const parsed = querySchema.safeParse({
+    q: c.req.query('q') ?? undefined,
+    outreach_status: c.req.query('outreach_status') ?? undefined,
+    mailbox_id: c.req.query('mailbox_id') ?? undefined,
+    has_mailbox: c.req.query('has_mailbox') ?? undefined,
+    has_people: c.req.query('has_people') ?? undefined,
+    pending_drafts: c.req.query('pending_drafts') ?? undefined,
     limit: c.req.query('limit') ?? undefined,
     offset: c.req.query('offset') ?? undefined
   })
@@ -54,10 +85,78 @@ companiesRoutes.get('/', async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
 
-  const { limit, offset } = parsed.data
+  const {
+    q,
+    outreach_status,
+    mailbox_id,
+    has_mailbox,
+    has_people,
+    pending_drafts,
+    limit,
+    offset
+  } = parsed.data
+
+  const term = q?.toLowerCase()
+  const searchClause = term
+    ? or(
+        sql`position(${term} in lower(coalesce(${companies.name}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.domain}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.website}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.industry}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.hqLocation}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.notes}, ''))) > 0`,
+        sql`exists (select 1 from ${mailboxes} where ${mailboxes.id} = ${companies.outreachMailboxId} and position(${term} in lower(coalesce(${mailboxes.email}, ''))) > 0)`,
+        sql`exists (select 1 from ${mailboxes} where ${mailboxes.id} = ${companies.outreachMailboxId} and position(${term} in lower(coalesce(${mailboxes.displayName}, ''))) > 0)`
+      )
+    : undefined
+
+  const filters: SQL[] = []
+  if (outreach_status) {
+    filters.push(eq(companies.outreachStatus, outreach_status))
+  }
+  if (mailbox_id) {
+    filters.push(eq(companies.outreachMailboxId, mailbox_id))
+  } else if (has_mailbox === 'true') {
+    filters.push(isNotNull(companies.outreachMailboxId))
+  } else if (has_mailbox === 'false') {
+    filters.push(isNull(companies.outreachMailboxId))
+  }
+  if (has_people === 'true') {
+    filters.push(
+      sql`exists (select 1 from ${people} where ${people.companyId} = ${companies.id})`
+    )
+  }
+  if (has_people === 'false') {
+    filters.push(
+      sql`not exists (select 1 from ${people} where ${people.companyId} = ${companies.id})`
+    )
+  }
+  if (pending_drafts === 'true') {
+    filters.push(
+      sql`exists (select 1 from ${outreachDrafts} where ${outreachDrafts.companyId} = ${companies.id} and ${outreachDrafts.status} = 'pending_review')`
+    )
+  }
+  if (pending_drafts === 'false') {
+    filters.push(
+      sql`not exists (select 1 from ${outreachDrafts} where ${outreachDrafts.companyId} = ${companies.id} and ${outreachDrafts.status} = 'pending_review')`
+    )
+  }
+
+  const filterClause = filters.length > 0 ? and(...filters) : undefined
+  const combinedWhere =
+    searchClause && filterClause
+      ? and(searchClause, filterClause)
+      : (searchClause ?? filterClause)
+
   const rows = await db
-    .select()
+    .select({
+      ...getTableColumns(companies),
+      peopleCount: sql<number>`(select count(*)::int from ${people} where ${people.companyId} = ${companies.id})`.as(
+        'people_count'
+      )
+    })
     .from(companies)
+    .where(combinedWhere)
     .orderBy(desc(companies.createdAt))
     .limit(limit)
     .offset(offset)
@@ -100,8 +199,6 @@ companiesRoutes.post('/', async (c) => {
     .returning()
   return c.json(row, 201)
 })
-
-const outreachStatusValues = ['dormant', 'working', 'paused', 'completed', 'dead'] as const
 
 const patchOutreachSchema = z.object({
   outreachStatus: z.enum(outreachStatusValues).optional(),

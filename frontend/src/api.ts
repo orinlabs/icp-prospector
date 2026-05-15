@@ -32,8 +32,8 @@ export async function apiAuthMe(): Promise<{ user: AuthUser | null }> {
   return parseJson<{ user: AuthUser | null }>(res)
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(buildUrl(path), cred)
+export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(buildUrl(path), { ...cred, ...init })
   return parseJson<T>(res)
 }
 
@@ -138,6 +138,8 @@ export type OutreachStatus =
 export type Company = {
   id: string
   name: string
+  /** Present on list endpoints; total people linked to this company. */
+  peopleCount?: number
   domain: string | null
   website: string | null
   industry: string | null
@@ -241,13 +243,22 @@ export type DraftQueueRow = {
   person: { id: string; fullName: string | null; title: string | null } | null
 }
 
+export type SentEmailRow = {
+  id: string
+  toEmail: string
+  subject: string
+  sentAt: string | null
+  gmailMessageId: string | null
+  person: { id: string; fullName: string | null; title: string | null } | null
+}
+
 export type DraftDetail = {
   draft: OutreachDraft
   company: Company | null
   mailbox: DraftMailbox | null
   person: Person | null
   strategy: string | null
-  recentEvents: OutreachEvent[]
+  sentEmails: SentEmailRow[]
 }
 
 export type UsageTotals = {

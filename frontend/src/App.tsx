@@ -11,7 +11,7 @@ import {
   Sparkles,
   Users
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Navigate,
   Route,
@@ -60,6 +60,7 @@ import { PeoplePage } from '@/pages/PeoplePage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ListsPage } from '@/pages/ListsPage'
 import { UsagePage } from '@/pages/UsagePage'
+import type { CompaniesTableFetchParams, PeopleTableFetchParams } from '@/lib/listFetchParams'
 import { emailToInitials } from '@/lib/userDisplay'
 
 type TabId =
@@ -75,6 +76,10 @@ type DetailSelection =
   | { type: 'person'; id: string }
   | { type: 'company'; id: string }
   | { type: 'crawl'; id: string }
+type PeopleCrawlFilter = {
+  campaignId: string
+  campaignRunId: string | null
+}
 type PagedResponse<T> = { data: T[]; limit: number; offset: number }
 type AgenticPeopleSearchResponse = {
   selectedPersonIds: string[]
@@ -100,6 +105,43 @@ type AgenticCompanySearchStreamEvent =
   | AgenticCompanySearchResponse & { type: 'done' }
 
 const PAGE_SIZE = 100
+const PALETTE_RECORD_LIMIT = 40
+
+function buildPeoplePath(
+  offset: number,
+  crawlFilter: PeopleCrawlFilter | null,
+  list: PeopleTableFetchParams,
+  limit: number
+): string {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  if (crawlFilter?.campaignId) params.set('campaign_id', crawlFilter.campaignId)
+  if (crawlFilter?.campaignRunId) params.set('campaign_run_id', crawlFilter.campaignRunId)
+  const q = list.q?.trim()
+  if (q) params.set('q', q)
+  if (list.lifecycle) params.set('lifecycle', list.lifecycle)
+  if (list.companyId) params.set('company_id', list.companyId)
+  else if (list.companyScope) params.set('company_scope', list.companyScope)
+  if (list.hasEmail) params.set('has_email', list.hasEmail)
+  if (list.hasLinkedin) params.set('has_linkedin', list.hasLinkedin)
+  return '/people?' + params.toString()
+}
+
+function buildCompaniesPath(offset: number, list: CompaniesTableFetchParams, limit: number): string {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  const q = list.q?.trim()
+  if (q) params.set('q', q)
+  if (list.outreachStatus) params.set('outreach_status', list.outreachStatus)
+  if (list.mailboxId) params.set('mailbox_id', list.mailboxId)
+  else if (list.mailboxScope === 'assigned') params.set('has_mailbox', 'true')
+  else if (list.mailboxScope === 'unassigned') params.set('has_mailbox', 'false')
+  if (list.hasPeople) params.set('has_people', list.hasPeople)
+  if (list.pendingDrafts) params.set('pending_drafts', list.pendingDrafts)
+  return '/companies?' + params.toString()
+}
 
 const sections: SidebarSection<TabId>[] = [
   {
@@ -173,23 +215,6 @@ function parseDetailFromSearch(search: URLSearchParams): DetailSelection | null 
     return { type: kind, id }
   }
   return null
-}
-
-function collectSearchValues(value: unknown, depth = 0): string[] {
-  if (value === null || value === undefined || depth > 3) return []
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return [String(value)]
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => collectSearchValues(item, depth + 1))
-  }
-  if (typeof value === 'object') {
-    return Object.entries(value).flatMap(([key, item]) => [
-      key,
-      ...collectSearchValues(item, depth + 1)
-    ])
-  }
-  return []
 }
 
 function NavigateToLogin() {
@@ -272,11 +297,27 @@ function FlashApp({
   )
   const [pendingDraftCount, setPendingDraftCount] = useState(0)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [paletteQuery, setPaletteQuery] = useState('')
+  const [palettePeopleHits, setPalettePeopleHits] = useState<Person[]>([])
+  const [paletteCompanyHits, setPaletteCompanyHits] = useState<Company[]>([])
+  const [paletteRecordSearchLoading, setPaletteRecordSearchLoading] = useState(false)
   const [agenticSearchOpen, setAgenticSearchOpen] = useState(false)
+  const [peopleFetchParams, setPeopleFetchParams] = useState<PeopleTableFetchParams>({})
+  const [companiesFetchParams, setCompaniesFetchParams] = useState<CompaniesTableFetchParams>({})
+  const peopleFetchParamsRef = useRef(peopleFetchParams)
+  peopleFetchParamsRef.current = peopleFetchParams
+  const companiesFetchParamsRef = useRef(companiesFetchParams)
+  companiesFetchParamsRef.current = companiesFetchParams
+
+  const peopleLoadAbortRef = useRef<AbortController | null>(null)
+  const companiesLoadAbortRef = useRef<AbortController | null>(null)
   const [agenticPeopleMatchIds, setAgenticPeopleMatchIds] = useState<Set<string> | null>(null)
   const [agenticCompanyMatchIds, setAgenticCompanyMatchIds] = useState<Set<string> | null>(null)
+  const [peopleCrawlFilter, setPeopleCrawlFilter] = useState<PeopleCrawlFilter | null>(null)
   const [visiblePersonIds, setVisiblePersonIds] = useState<string[]>([])
   const [visibleCompanyIds, setVisibleCompanyIds] = useState<string[]>([])
+  const [companyDrawerPeople, setCompanyDrawerPeople] = useState<Person[]>([])
+  const [companyDrawerPeopleLoading, setCompanyDrawerPeopleLoading] = useState(false)
 
   const [name, setName] = useState('My ICP run')
   const [icpDocument, setIcpDocument] = useState(
@@ -314,31 +355,74 @@ function FlashApp({
     }
   }, [])
 
-  const loadPeople = useCallback(async (offset = 0) => {
-    setPeopleLoading(true)
-    setError(null)
-    try {
-      const res = await apiGet<PagedResponse<Person>>(
-        `/people?limit=${PAGE_SIZE}&offset=${offset}`
-      )
-      setPeople((current) => (offset === 0 ? res.data : [...current, ...res.data]))
-      setPeopleHasMore(res.data.length === PAGE_SIZE)
-    } finally {
-      setPeopleLoading(false)
-    }
+  const mergePeopleFetchParams = useCallback((patch: Partial<PeopleTableFetchParams>) => {
+    setPeopleFetchParams((prev) => {
+      const next: PeopleTableFetchParams = { ...prev }
+      for (const k of Object.keys(patch) as (keyof PeopleTableFetchParams)[]) {
+        const v = patch[k]
+        if (v === undefined) delete next[k]
+        else next[k] = v as never
+      }
+      return next
+    })
   }, [])
 
+  const mergeCompaniesFetchParams = useCallback((patch: Partial<CompaniesTableFetchParams>) => {
+    setCompaniesFetchParams((prev) => {
+      const next: CompaniesTableFetchParams = { ...prev }
+      for (const k of Object.keys(patch) as (keyof CompaniesTableFetchParams)[]) {
+        const v = patch[k]
+        if (v === undefined) delete next[k]
+        else next[k] = v as never
+      }
+      return next
+    })
+  }, [])
+
+  const loadPeople = useCallback(
+    async (offset = 0, crawlOverride?: PeopleCrawlFilter | null) => {
+      const activeCrawl = crawlOverride === undefined ? peopleCrawlFilter : crawlOverride
+      peopleLoadAbortRef.current?.abort()
+      const ac = new AbortController()
+      peopleLoadAbortRef.current = ac
+      setPeopleLoading(true)
+      setError(null)
+      try {
+        const path = buildPeoplePath(
+          offset,
+          activeCrawl,
+          peopleFetchParamsRef.current,
+          PAGE_SIZE
+        )
+        const res = await apiGet<PagedResponse<Person>>(path, { signal: ac.signal })
+        setPeople((current) => (offset === 0 ? res.data : [...current, ...res.data]))
+        setPeopleHasMore(res.data.length === PAGE_SIZE)
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        setError(err instanceof Error ? err.message : 'Failed to load people')
+      } finally {
+        if (!ac.signal.aborted) setPeopleLoading(false)
+      }
+    },
+    [peopleCrawlFilter]
+  )
+
   const loadCompanies = useCallback(async (offset = 0) => {
+    companiesLoadAbortRef.current?.abort()
+    const ac = new AbortController()
+    companiesLoadAbortRef.current = ac
     setCompaniesLoading(true)
     setError(null)
     try {
-      const res = await apiGet<PagedResponse<Company>>(
-        `/companies?limit=${PAGE_SIZE}&offset=${offset}`
-      )
+      const path = buildCompaniesPath(offset, companiesFetchParamsRef.current, PAGE_SIZE)
+      const res = await apiGet<PagedResponse<Company>>(path, { signal: ac.signal })
       setCompanies((current) => (offset === 0 ? res.data : [...current, ...res.data]))
       setCompaniesHasMore(res.data.length === PAGE_SIZE)
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      setError(err instanceof Error ? err.message : 'Failed to load companies')
     } finally {
-      setCompaniesLoading(false)
+      if (!ac.signal.aborted) setCompaniesLoading(false)
     }
   }, [])
 
@@ -390,8 +474,6 @@ function FlashApp({
       setCrawlsLoading(true)
       try {
         await loadCrawls()
-        await loadCompanies()
-        await loadPeople()
         await loadMailboxes()
         await loadLists()
         await loadPendingDrafts()
@@ -406,7 +488,17 @@ function FlashApp({
     return () => {
       cancelled = true
     }
-  }, [authUser, loadCompanies, loadCrawls, loadPeople, loadMailboxes, loadLists, loadPendingDrafts])
+  }, [authUser, loadCrawls, loadMailboxes, loadLists, loadPendingDrafts])
+
+  useEffect(() => {
+    if (!authUser) return
+    void loadPeople(0)
+  }, [authUser, peopleCrawlFilter, peopleFetchParams, loadPeople])
+
+  useEffect(() => {
+    if (!authUser) return
+    void loadCompanies(0)
+  }, [authUser, companiesFetchParams, loadCompanies])
 
   async function runCompanyOutreach(companyId: string) {
     setRunningId(companyId)
@@ -463,16 +555,6 @@ function FlashApp({
     () => new Map(people.map((person) => [person.id, person])),
     [people]
   )
-  const peopleByCompanyForSearch = useMemo(() => {
-    const map = new Map<string, Person[]>()
-    for (const person of people) {
-      if (!person.companyId) continue
-      const current = map.get(person.companyId) ?? []
-      current.push(person)
-      map.set(person.companyId, current)
-    }
-    return map
-  }, [people])
   const crawlById = useMemo(
     () => new Map(crawls.map((c) => [c.id, c])),
     [crawls]
@@ -485,18 +567,13 @@ function FlashApp({
   const selectedCompany =
     selectedCompanyDirect ??
     (selectedPerson?.companyId ? (companyById.get(selectedPerson.companyId) ?? null) : null)
-  const selectedCompanyPeople = selectedCompanyDirect
-    ? people.filter((p) => p.companyId === selectedCompanyDirect.id)
-    : selectedPerson?.companyId
-      ? people.filter((p) => p.companyId === selectedPerson.companyId)
-      : []
 
   const selectedCrawl =
     detail?.type === 'crawl' ? (crawlById.get(detail.id) ?? null) : null
   const selectedCrawlPeople = useMemo(
     () =>
       selectedCrawl
-        ? people.filter((p) => p.firstSeenCampaignId === selectedCrawl.id)
+        ? people.filter((p) => p.discoveryCampaignIds.includes(selectedCrawl.id))
         : [],
     [selectedCrawl, people]
   )
@@ -506,6 +583,38 @@ function FlashApp({
   const selectedCrawlUsage = selectedCrawl
     ? (crawlUsageByCrawlId[selectedCrawl.id] ?? null)
     : null
+
+  const companyDrawerFetchKey = detail?.type === 'company' ? detail.id : null
+
+  useEffect(() => {
+    if (!companyDrawerFetchKey) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset when leaving company detail
+      setCompanyDrawerPeople([])
+      setCompanyDrawerPeopleLoading(false)
+      return
+    }
+    let cancelled = false
+    setCompanyDrawerPeopleLoading(true)
+    setCompanyDrawerPeople([])
+    void apiGet<PagedResponse<Person>>(
+      '/people?company_id=' + companyDrawerFetchKey + '&limit=200&offset=0'
+    )
+      .then((res) => {
+        if (!cancelled) setCompanyDrawerPeople(res.data)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCompanyDrawerPeople([])
+          setError(err instanceof Error ? err.message : 'Failed to load company people')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCompanyDrawerPeopleLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [companyDrawerFetchKey])
 
   useEffect(() => {
     if (detail?.type !== 'crawl') return
@@ -518,7 +627,8 @@ function FlashApp({
       const cmdOrCtrl = e.metaKey || e.ctrlKey
       if (cmdOrCtrl && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
         e.preventDefault()
-        setPaletteOpen((open) => !open)
+        setPaletteQuery('')
+        setPaletteOpen((wasOpen) => !wasOpen)
         return
       }
       if (e.key === 'Escape' && !paletteOpen && detail) {
@@ -528,6 +638,63 @@ function FlashApp({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [paletteOpen, detail, openDetail])
+
+  useEffect(() => {
+    if (!paletteOpen) {
+      setPaletteRecordSearchLoading(false)
+      setPalettePeopleHits([])
+      setPaletteCompanyHits([])
+      return
+    }
+    const trimmed = paletteQuery.trim()
+    if (trimmed.length === 0) {
+      setPaletteRecordSearchLoading(false)
+      setPalettePeopleHits([])
+      setPaletteCompanyHits([])
+      return
+    }
+
+    setPaletteRecordSearchLoading(true)
+    const ac = new AbortController()
+    const timer = window.setTimeout(() => {
+      const q = encodeURIComponent(trimmed)
+      void Promise.all([
+        apiGet<PagedResponse<Person>>(
+          '/people?limit=' +
+            String(PALETTE_RECORD_LIMIT) +
+            '&offset=0&q=' +
+            q,
+          { signal: ac.signal }
+        ),
+        apiGet<PagedResponse<Company>>(
+          '/companies?limit=' +
+            String(PALETTE_RECORD_LIMIT) +
+            '&offset=0&q=' +
+            q,
+          { signal: ac.signal }
+        )
+      ])
+        .then(([pe, co]) => {
+          if (ac.signal.aborted) return
+          setPalettePeopleHits(pe.data)
+          setPaletteCompanyHits(co.data)
+        })
+        .catch((err) => {
+          if (ac.signal.aborted) return
+          setPalettePeopleHits([])
+          setPaletteCompanyHits([])
+          setError(err instanceof Error ? err.message : 'Command palette search failed')
+        })
+        .finally(() => {
+          if (!ac.signal.aborted) setPaletteRecordSearchLoading(false)
+        })
+    }, 260)
+
+    return () => {
+      window.clearTimeout(timer)
+      ac.abort()
+    }
+  }, [paletteOpen, paletteQuery])
 
   const paletteCommands = useMemo<CommandItem[]>(() => {
     const navItems: CommandItem[] = [
@@ -597,7 +764,7 @@ function FlashApp({
       }
     ]
 
-    const peopleItems: CommandItem[] = people.map((p) => {
+    const peopleItems: CommandItem[] = palettePeopleHits.map((p) => {
       const company = p.companyId ? companyById.get(p.companyId) : null
       const description = [p.title, company?.name].filter(Boolean).join(' - ')
       return {
@@ -606,78 +773,22 @@ function FlashApp({
         description: description || undefined,
         group: 'People',
         icon: Users,
-        keywords: collectSearchValues([
-          p.email,
-          p.phone,
-          p.linkedinUrl,
-          p.twitterUrl,
-          p.title,
-          p.seniority,
-          p.department,
-          p.lifecycleStatus,
-          p.notes,
-          p.context,
-          p.icpKeywords,
-          p.enrichmentSources,
-          company?.name,
-          company?.domain,
-          company?.website,
-          company?.industry,
-          company?.employeeRange,
-          company?.hqLocation,
-          company?.outreachStatus,
-          company?.outreachStrategy,
-          company?.outreachEmailInstructions,
-          company?.enrichmentPayload
-        ]).join(' '),
+        keywords: [p.email, p.title, p.fullName, company?.name, company?.domain]
+          .filter(Boolean)
+          .join(' '),
         onSelect: () => openDetail({ type: 'person', id: p.id })
       }
     })
 
-    const companyItems: CommandItem[] = companies.map((c) => {
-      const relatedPeople = peopleByCompanyForSearch.get(c.id) ?? []
-      const mailbox = c.outreachMailboxId
-        ? mailboxes.find((m) => m.id === c.outreachMailboxId)
-        : null
-      return {
-        id: 'company:' + c.id,
-        label: c.name,
-        description: c.domain ?? c.website ?? undefined,
-        group: 'Companies',
-        icon: Building2,
-        keywords: collectSearchValues([
-          c.domain,
-          c.website,
-          c.industry,
-          c.employeeRange,
-          c.hqLocation,
-          c.outreachStatus,
-          c.outreachStrategy,
-          c.outreachEmailInstructions,
-          c.enrichmentPayload,
-          mailbox?.email,
-          mailbox?.displayName,
-          mailbox?.senderBio,
-          mailbox?.outreachEmailInstructions,
-          relatedPeople.map((person) => [
-            person.fullName,
-            person.email,
-            person.phone,
-            person.linkedinUrl,
-            person.twitterUrl,
-            person.title,
-            person.seniority,
-            person.department,
-            person.lifecycleStatus,
-            person.notes,
-            person.context,
-            person.icpKeywords,
-            person.enrichmentSources
-          ])
-        ]).join(' '),
-        onSelect: () => openDetail({ type: 'company', id: c.id })
-      }
-    })
+    const companyItems: CommandItem[] = paletteCompanyHits.map((c) => ({
+      id: 'company:' + c.id,
+      label: c.name,
+      description: c.domain ?? c.website ?? undefined,
+      group: 'Companies',
+      icon: Building2,
+      keywords: [c.domain, c.website, c.industry, c.name].filter(Boolean).join(' '),
+      onSelect: () => openDetail({ type: 'company', id: c.id })
+    }))
 
     const crawlItems: CommandItem[] = crawls.map((c) => ({
       id: 'crawl:' + c.id,
@@ -701,19 +812,49 @@ function FlashApp({
 
     return [...navItems, ...listItems, ...crawlItems, ...companyItems, ...peopleItems]
   }, [
-    people,
-    companies,
     lists,
     crawls,
     companyById,
-    peopleByCompanyForSearch,
-    mailboxes,
+    palettePeopleHits,
+    paletteCompanyHits,
     goToTab,
     openDetail
   ])
 
   function loadMorePeople() {
-    if (!peopleLoading && peopleHasMore) void loadPeople(people.length)
+    if (!peopleLoading && peopleHasMore) {
+      void loadPeople(people.length)
+    }
+  }
+
+  const viewPeopleForCrawl = useCallback(
+    (campaignId: string, campaignRunId: string | null = null) => {
+      setAgenticPeopleMatchIds(null)
+      const nextFilter: PeopleCrawlFilter = { campaignId, campaignRunId }
+      setPeopleCrawlFilter(nextFilter)
+      void loadCrawlRuns(campaignId)
+      openDetail(null)
+      goToTab('people')
+    },
+    [loadCrawlRuns, openDetail, goToTab]
+  )
+
+  function handlePeopleCrawlFilterChange(
+    campaignId: string | null,
+    campaignRunId: string | null
+  ) {
+    setAgenticPeopleMatchIds(null)
+    if (!campaignId) {
+      setPeopleCrawlFilter(null)
+      return
+    }
+    const nextFilter: PeopleCrawlFilter = { campaignId, campaignRunId }
+    setPeopleCrawlFilter(nextFilter)
+    void loadCrawlRuns(campaignId)
+  }
+
+  function clearPeopleCrawlFilter() {
+    setPeopleCrawlFilter(null)
   }
 
   function loadMoreCompanies() {
@@ -837,6 +978,10 @@ function FlashApp({
     setAgenticSearchOpen(false)
     goToTab('lists')
   }
+
+  const peoplePageCrawlRuns = peopleCrawlFilter
+    ? (crawlRunsByCrawlId[peopleCrawlFilter.campaignId] ?? [])
+    : []
 
   const header = headerCopy[activeTab]
   const drawerOpen = detail !== null
@@ -997,7 +1142,10 @@ function FlashApp({
       sections={sidebarSections}
       activeId={activeTab}
       onSelect={goToTab}
-      onOpenSearch={() => setPaletteOpen(true)}
+      onOpenSearch={() => {
+        setPaletteQuery('')
+        setPaletteOpen(true)
+      }}
       userInitials={emailToInitials(authUser.email)}
       onSignOut={() => void handleSignOut()}
       sidebarFooter={
@@ -1038,8 +1186,12 @@ function FlashApp({
         <PeoplePage
           people={people}
           companyById={companyById}
+          crawls={crawls}
+          crawlRuns={peoplePageCrawlRuns}
+          crawlFilter={peopleCrawlFilter}
           loading={peopleLoading}
           hasMore={peopleHasMore}
+          mergeTableFetchParams={mergePeopleFetchParams}
           onRefresh={() => void loadPeople(0)}
           onLoadMore={loadMorePeople}
           onSelectPerson={(person) => openDetail({ type: 'person', id: person.id })}
@@ -1047,6 +1199,8 @@ function FlashApp({
           selectedKey={selectedKey}
           agenticMatchIds={agenticPeopleMatchIds}
           onClearAgenticResults={() => setAgenticPeopleMatchIds(null)}
+          onCrawlFilterChange={handlePeopleCrawlFilterChange}
+          onClearCrawlFilter={clearPeopleCrawlFilter}
           onVisibleIdsChange={setVisiblePersonIds}
         />
       ) : null}
@@ -1054,11 +1208,11 @@ function FlashApp({
       {activeTab === 'companies' ? (
         <CompaniesPage
           companies={companies}
-          people={people}
           mailboxes={mailboxes}
           pendingDraftsByCompany={pendingDraftsByCompany}
           loading={companiesLoading}
           hasMore={companiesHasMore}
+          mergeTableFetchParams={mergeCompaniesFetchParams}
           onRefresh={() => {
             void loadCompanies(0)
             void loadPendingDrafts()
@@ -1154,7 +1308,8 @@ function FlashApp({
         person={selectedPerson}
         company={selectedCompany}
         crawl={selectedCrawl}
-        companyPeople={selectedCompanyPeople}
+        companyPeople={detail?.type === 'company' ? companyDrawerPeople : []}
+        companyPeopleLoading={detail?.type === 'company' ? companyDrawerPeopleLoading : false}
         crawlPeople={selectedCrawlPeople}
         crawlRuns={selectedCrawlRuns}
         crawlRunsLoading={crawlRunsLoading}
@@ -1164,6 +1319,7 @@ function FlashApp({
         onSelectPerson={(person) => openDetail({ type: 'person', id: person.id })}
         onSelectCompany={(companyId) => openDetail({ type: 'company', id: companyId })}
         onRunCrawl={startRun}
+        onViewPeopleForCrawl={viewPeopleForCrawl}
         onCompanyChanged={() => {
           void loadCompanies(0)
           void loadPendingDrafts()
@@ -1174,6 +1330,9 @@ function FlashApp({
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
+        query={paletteQuery}
+        onQueryChange={setPaletteQuery}
+        recordSearchLoading={paletteRecordSearchLoading}
         commands={paletteCommands}
       />
     </AppShell>

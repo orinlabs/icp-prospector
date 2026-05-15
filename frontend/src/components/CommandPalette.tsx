@@ -21,6 +21,11 @@ interface CommandPaletteProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   commands: CommandItem[]
+  /** Controlled search text (required for directory search integration). */
+  query: string
+  onQueryChange: (query: string) => void
+  /** Shown when `query` is non-empty and async record search is in flight. */
+  recordSearchLoading?: boolean
   placeholder?: string
   emptyState?: React.ReactNode
 }
@@ -29,10 +34,12 @@ export function CommandPalette({
   open,
   onOpenChange,
   commands,
+  query,
+  onQueryChange,
+  recordSearchLoading = false,
   placeholder = 'Search commands, people, companies...',
   emptyState
 }: CommandPaletteProps) {
-  const [query, setQuery] = React.useState('')
   const [rawIndex, setRawIndex] = React.useState(0)
   const listRef = React.useRef<HTMLDivElement>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
@@ -68,12 +75,12 @@ export function CommandPalette({
   const handleOpenChange = React.useCallback(
     (next: boolean) => {
       if (!next) {
-        setQuery('')
+        onQueryChange('')
         setRawIndex(0)
       }
       onOpenChange(next)
     },
-    [onOpenChange]
+    [onOpenChange, onQueryChange]
   )
 
   React.useEffect(() => {
@@ -154,7 +161,7 @@ export function CommandPalette({
               ref={inputRef}
               value={query}
               onChange={(e) => {
-                setQuery(e.target.value)
+                onQueryChange(e.target.value)
                 setRawIndex(0)
               }}
               placeholder={placeholder}
@@ -183,7 +190,11 @@ export function CommandPalette({
           >
             {filtered.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-ink-muted">
-                {emptyState ?? <>No results for &ldquo;{query}&rdquo;</>}
+                {recordSearchLoading && query.trim().length > 0 ? (
+                  <>Searching…</>
+                ) : (
+                  emptyState ?? <>No results for &ldquo;{query}&rdquo;</>
+                )}
               </div>
             ) : (
               grouped.map(({ group, items }) => (

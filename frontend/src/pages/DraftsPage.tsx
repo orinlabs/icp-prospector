@@ -21,7 +21,6 @@ import {
   type Mailbox,
   type OutreachDraftStatus
 } from '@/api'
-import { Badge } from '@/components/ui/badge'
 import { Banner } from '@/components/ui/banner'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -284,7 +283,7 @@ function DraftDetailPanel({
   onChanged: () => void
   onError: (msg: string | null) => void
 }) {
-  const { draft, company, mailbox, person, strategy, recentEvents } = detail
+  const { draft, company, mailbox, person, strategy, sentEmails } = detail
   const isPending = draft.status === 'pending_review'
   const [toEmail, setToEmail] = useState(draft.toEmail)
   const [subject, setSubject] = useState(draft.subject)
@@ -295,7 +294,7 @@ function DraftDetailPanel({
   const [discarding, setDiscarding] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
   const [showStrategy, setShowStrategy] = useState(false)
-  const [showTimeline, setShowTimeline] = useState(true)
+  const [showSentEmails, setShowSentEmails] = useState(true)
   const [saveInstAccount, setSaveInstAccount] = useState(false)
   const [saveInstMailbox, setSaveInstMailbox] = useState(false)
 
@@ -488,34 +487,45 @@ function DraftDetailPanel({
         <section className="rounded-md border border-line bg-surface">
           <button
             type="button"
-            onClick={() => setShowTimeline((v) => !v)}
+            onClick={() => setShowSentEmails((v) => !v)}
             className="flex w-full items-center justify-between px-3 py-2 text-left text-2xs font-medium uppercase tracking-wide text-ink-faint hover:text-ink"
           >
-            <span>Account timeline ({recentEvents.length})</span>
-            <span className="text-ink-faint">{showTimeline ? 'Hide' : 'Show'}</span>
+            <span>Sent on this account ({sentEmails.length})</span>
+            <span className="text-ink-faint">{showSentEmails ? 'Hide' : 'Show'}</span>
           </button>
-          {showTimeline ? (
+          {showSentEmails ? (
             <ul className="divide-y divide-line border-t border-line">
-              {recentEvents.length === 0 ? (
-                <li className="px-3 py-3 text-sm text-ink-faint">No timeline entries yet.</li>
+              {sentEmails.length === 0 ? (
+                <li className="px-3 py-3 text-sm text-ink-faint">
+                  No emails sent to this account yet.
+                </li>
               ) : (
-                recentEvents.map((e) => (
-                  <li key={e.id} className="px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <Badge variant="mono">{e.kind}</Badge>
-                      <span className="text-2xs text-ink-faint">
-                        {formatRelative(e.createdAt) ?? '-'}
+                sentEmails.map((email) => (
+                  <li key={email.id} className="px-3 py-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-ink">
+                          {email.person?.fullName ?? email.toEmail}
+                        </div>
+                        {email.person?.fullName ? (
+                          <div className="truncate text-2xs text-ink-muted">{email.toEmail}</div>
+                        ) : null}
+                        <div className="mt-0.5 truncate text-sm text-ink">{email.subject}</div>
+                      </div>
+                      <span className="shrink-0 text-2xs text-ink-faint">
+                        {formatRelative(email.sentAt) ?? '-'}
                       </span>
                     </div>
-                    <div className="mt-1 text-sm text-ink">{e.summary}</div>
-                    {e.sourceUrl ? (
+                    {email.gmailMessageId ? (
                       <a
-                        href={e.sourceUrl}
+                        href={
+                          'https://mail.google.com/mail/u/0/#sent/' + email.gmailMessageId
+                        }
                         target="_blank"
                         rel="noreferrer"
-                        className="mt-0.5 inline-block break-all text-2xs text-ink-muted underline-offset-4 hover:text-accent hover:underline"
+                        className="mt-1 inline-flex items-center gap-1 text-2xs text-ink-muted underline-offset-4 hover:text-accent hover:underline"
                       >
-                        {e.sourceUrl}
+                        Open in Gmail <ExternalLink className="size-3" />
                       </a>
                     ) : null}
                   </li>

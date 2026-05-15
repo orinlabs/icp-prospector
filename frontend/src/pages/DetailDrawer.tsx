@@ -1,4 +1,4 @@
-import { ExternalLink, Globe, MapPin, Play } from 'lucide-react'
+import { ExternalLink, Globe, MapPin, Play, Users } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import {
@@ -47,6 +47,7 @@ interface Props {
   company: Company | null
   crawl: Campaign | null
   companyPeople: Person[]
+  companyPeopleLoading?: boolean
   crawlPeople: Person[]
   crawlRuns: CampaignRun[]
   crawlRunsLoading: boolean
@@ -56,6 +57,7 @@ interface Props {
   onSelectPerson: (person: Person) => void
   onSelectCompany: (companyId: string) => void
   onRunCrawl?: (crawlId: string) => void
+  onViewPeopleForCrawl?: (crawlId: string, campaignRunId?: string | null) => void
   onCompanyChanged?: () => void
   onError?: (msg: string) => void
 }
@@ -67,6 +69,7 @@ export function DetailDrawer({
   company,
   crawl,
   companyPeople,
+  companyPeopleLoading = false,
   crawlPeople,
   crawlRuns,
   crawlRunsLoading,
@@ -76,6 +79,7 @@ export function DetailDrawer({
   onSelectPerson,
   onSelectCompany,
   onRunCrawl,
+  onViewPeopleForCrawl,
   onCompanyChanged,
   onError
 }: Props) {
@@ -152,6 +156,7 @@ export function DetailDrawer({
           <CompanyView
             company={company}
             people={companyPeople}
+            peopleLoading={companyPeopleLoading}
             mailboxes={mailboxes}
             onSelectPerson={onSelectPerson}
             onCompanyChanged={onCompanyChanged}
@@ -167,6 +172,7 @@ export function DetailDrawer({
             people={crawlPeople}
             usage={crawlUsage}
             onSelectPerson={onSelectPerson}
+            onViewPeopleForCrawl={onViewPeopleForCrawl}
           />
         ) : null}
       </DrawerContent>
@@ -294,6 +300,7 @@ function PersonView({
 function CompanyView({
   company,
   people,
+  peopleLoading,
   mailboxes,
   onSelectPerson,
   onCompanyChanged,
@@ -301,6 +308,7 @@ function CompanyView({
 }: {
   company: Company
   people: Person[]
+  peopleLoading: boolean
   mailboxes: Mailbox[]
   onSelectPerson: (person: Person) => void
   onCompanyChanged?: () => void
@@ -314,7 +322,7 @@ function CompanyView({
         <DrawerTabsTrigger value="people">
           People{' '}
           <span className="ml-1.5 font-mono text-[11px] text-ink-faint">
-            {people.length}
+            {peopleLoading ? '…' : people.length}
           </span>
         </DrawerTabsTrigger>
       </DrawerTabsList>
@@ -366,7 +374,9 @@ function CompanyView({
 
       <DrawerTabsContent value="people" className="min-h-0 flex-1 overflow-y-auto">
         <DrawerBody>
-          {people.length === 0 ? (
+          {peopleLoading ? (
+            <div className="py-10 text-center text-sm text-ink-muted">Loading contacts…</div>
+          ) : people.length === 0 ? (
             <EmptyTab
               title="No people yet"
               description="Researched contacts at this company will appear here."
@@ -666,7 +676,8 @@ function CrawlView({
   runsLoading,
   people,
   usage,
-  onSelectPerson
+  onSelectPerson,
+  onViewPeopleForCrawl
 }: {
   crawl: Campaign
   runs: CampaignRun[]
@@ -674,6 +685,7 @@ function CrawlView({
   people: Person[]
   usage: { totals: UsageByCampaignRow | null; runs: UsageByRunRow[] } | null
   onSelectPerson: (person: Person) => void
+  onViewPeopleForCrawl?: (crawlId: string, campaignRunId?: string | null) => void
 }) {
   const totalQualified = runs.reduce((acc, r) => acc + (r.qualifiedCount ?? 0), 0)
   const usageByRunId = new Map(
@@ -748,6 +760,18 @@ function CrawlView({
                 </span>
               }
             />
+            {people.length > 0 && onViewPeopleForCrawl ? (
+              <div className="border-t border-line px-4 py-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  iconLeft={Users}
+                  onClick={() => onViewPeopleForCrawl(crawl.id)}
+                >
+                  View in People
+                </Button>
+              </div>
+            ) : null}
           </SectionCard>
 
           <SectionCard title="Usage">
@@ -807,6 +831,8 @@ function CrawlView({
                   run={run}
                   index={runs.length - idx}
                   usage={usageByRunId.get(run.id) ?? null}
+                  onViewPeopleForCrawl={onViewPeopleForCrawl}
+                  crawlId={crawl.id}
                   key={run.id}
                 />
               ))}
@@ -823,29 +849,41 @@ function CrawlView({
               description="People discovered by this crawl will appear here once a run completes."
             />
           ) : (
-            <div className="overflow-hidden rounded-lg border border-line bg-surface">
-              {people.map((p, idx) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => onSelectPerson(p)}
-                  className={cn(
-                    'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-muted/60',
-                    idx > 0 && 'border-t border-line'
-                  )}
+            <div className="space-y-3">
+              {onViewPeopleForCrawl ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  iconLeft={Users}
+                  onClick={() => onViewPeopleForCrawl(crawl.id)}
                 >
-                  <Avatar size="md" name={p.fullName ?? '?'} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-ink">
-                      {p.fullName ?? 'Unnamed'}
+                  View all in People
+                </Button>
+              ) : null}
+              <div className="overflow-hidden rounded-lg border border-line bg-surface">
+                {people.map((p, idx) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => onSelectPerson(p)}
+                    className={cn(
+                      'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-muted/60',
+                      idx > 0 && 'border-t border-line'
+                    )}
+                  >
+                    <Avatar size="md" name={p.fullName ?? '?'} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-ink">
+                        {p.fullName ?? 'Unnamed'}
+                      </div>
+                      <div className="truncate text-xs text-ink-muted">
+                        {p.title ?? '-'}
+                      </div>
                     </div>
-                    <div className="truncate text-xs text-ink-muted">
-                      {p.title ?? '-'}
-                    </div>
-                  </div>
-                  <StatusDot status={p.lifecycleStatus} />
-                </button>
-              ))}
+                    <StatusDot status={p.lifecycleStatus} />
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </DrawerBody>
@@ -857,11 +895,15 @@ function CrawlView({
 function RunRow({
   run,
   index,
-  usage
+  usage,
+  crawlId,
+  onViewPeopleForCrawl
 }: {
   run: CampaignRun
   index: number
   usage: UsageByRunRow | null
+  crawlId: string
+  onViewPeopleForCrawl?: (crawlId: string, campaignRunId?: string | null) => void
 }) {
   const tone = statusToTone(run.status)
   const checkpointStep =
@@ -876,9 +918,21 @@ function RunRow({
           <span className="font-mono text-[11px] text-ink-faint">#{index}</span>
           <StatusDot tone={tone.tone} label={tone.label} />
         </div>
-        <span className="text-xs text-ink-muted">
-          {formatRelative(run.createdAt) ?? '-'}
-        </span>
+        <div className="flex items-center gap-2">
+          {onViewPeopleForCrawl ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              iconLeft={Users}
+              onClick={() => onViewPeopleForCrawl(crawlId, run.id)}
+            >
+              People
+            </Button>
+          ) : null}
+          <span className="text-xs text-ink-muted">
+            {formatRelative(run.createdAt) ?? '-'}
+          </span>
+        </div>
       </header>
       <div className="px-4 py-3">
         <div className="grid grid-cols-4 gap-3">

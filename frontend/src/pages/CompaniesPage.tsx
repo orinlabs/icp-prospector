@@ -10,48 +10,34 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { apiPatch, apiPost, type Company, type Mailbox, type Person } from '@/api'
+import { apiPatch, apiPost, type Company, type Mailbox } from '@/api'
 import { Button } from '@/components/ui/button'
 import { DataTable, type DataTableColumn } from '@/components/ui/data-table'
 import { Input } from '@/components/ui/input'
 import { StatusDot } from '@/components/ui/status-dot'
 import { Toolbar, ToolbarSpacer } from '@/components/ui/toolbar'
 import { faviconUrl, formatRelative } from '@/lib/format'
+import { TABLE_SEARCH_DEBOUNCE_MS, type CompaniesTableFetchParams } from '@/lib/listFetchParams'
 import { cn } from '@/lib/utils'
 
 const filterSelectClass =
   'h-8 rounded-md border border-line bg-surface px-2.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/25'
 
-function collectSearchValues(value: unknown, depth = 0): string[] {
-  if (value === null || value === undefined || depth > 3) return []
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return [String(value)]
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => collectSearchValues(item, depth + 1))
-  }
-  if (typeof value === 'object') {
-    return Object.entries(value).flatMap(([key, item]) => [
-      key,
-      ...collectSearchValues(item, depth + 1)
-    ])
-  }
-  return []
-}
-
-function includesSearch(values: unknown[], q: string): boolean {
-  return values
-    .flatMap((value) => collectSearchValues(value))
-    .some((value) => value.toLowerCase().includes(q))
-}
+const OUTREACH_STATUS_VALUES: readonly Company['outreachStatus'][] = [
+  'dormant',
+  'completed',
+  'dead',
+  'paused',
+  'working'
+]
 
 interface Props {
   companies: Company[]
-  people: Person[]
   mailboxes: Mailbox[]
   pendingDraftsByCompany: Map<string, number>
   loading: boolean
   hasMore: boolean
+  mergeTableFetchParams: (patch: Partial<CompaniesTableFetchParams>) => void
   onRefresh: () => void
   onLoadMore: () => void
   onSelectCompany: (company: Company) => void
@@ -64,11 +50,11 @@ interface Props {
 
 export function CompaniesPage({
   companies,
-  people,
   mailboxes,
   pendingDraftsByCompany,
   loading,
   hasMore,
+  mergeTableFetchParams,
   onRefresh,
   onLoadMore,
   onSelectCompany,
@@ -84,12 +70,48 @@ export function CompaniesPage({
   const [bulkMailboxId, setBulkMailboxId] = useState<string | null>(null)
   const [bulkStarting, setBulkStarting] = useState(false)
   const [bulkPausing, setBulkPausing] = useState(false)
-  const [outreachFilter, setOutreachFilter] = useState<'all' | Company['outreachStatus']>(
-    'all'
-  )
+  const [outreachFilter, setOutreachFilter] = useState<'all' | Company['outreachStatus']>('all')
   const [mailboxFilter, setMailboxFilter] = useState('all')
   const [peopleFilter, setPeopleFilter] = useState('all')
   const [draftFilter, setDraftFilter] = useState('all')
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      const trimmed = search.trim()
+      mergeTableFetchParams({ q: trimmed || undefined })
+    }, TABLE_SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(handle)
+  }, [search, mergeTableFetchParams])
+
+  useEffect(() => {
+    const patch: Partial<CompaniesTableFetchParams> = {}
+    if (outreachFilter === 'all') patch.outreachStatus = undefined
+    else patch.outreachStatus = outreachFilter
+
+    if (mailboxFilter === 'all') {
+      patch.mailboxId = undefined
+      patch.mailboxScope = undefined
+    } else if (mailboxFilter === 'assigned') {
+      patch.mailboxId = undefined
+      patch.mailboxScope = 'assigned'
+    } else if (mailboxFilter === 'unassigned') {
+      patch.mailboxId = undefined
+      patch.mailboxScope = 'unassigned'
+    } else {
+      patch.mailboxId = mailboxFilter
+      patch.mailboxScope = undefined
+    }
+
+    if (peopleFilter === 'all') patch.hasPeople = undefined
+    else if (peopleFilter === 'with_people') patch.hasPeople = 'true'
+    else patch.hasPeople = 'false'
+
+    if (draftFilter === 'all') patch.pendingDrafts = undefined
+    else if (draftFilter === 'pending') patch.pendingDrafts = 'true'
+    else patch.pendingDrafts = 'false'
+
+    mergeTableFetchParams(patch)
+  }, [outreachFilter, mailboxFilter, peopleFilter, draftFilter, mergeTableFetchParams])
 
   useEffect(() => {
     if (!agenticMatchIds) return
@@ -98,119 +120,18 @@ export function CompaniesPage({
 
   const mailboxById = useMemo(() => new Map(mailboxes.map((m) => [m.id, m])), [mailboxes])
 
-  const peopleByCompany = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const p of people) {
-      if (!p.companyId) continue
-      map.set(p.companyId, (map.get(p.companyId) ?? 0) + 1)
-    }
-    return map
-  }, [people])
-
-  const peopleDetailsByCompany = useMemo(() => {
-    const map = new Map<string, Person[]>()
-    for (const person of people) {
-      if (!person.companyId) continue
-      const current = map.get(person.companyId) ?? []
-      current.push(person)
-      map.set(person.companyId, current)
-    }
-    return map
-  }, [people])
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    return companies.filter((c) => {
-      const relatedPeople = peopleDetailsByCompany.get(c.id) ?? []
-      const mailbox = c.outreachMailboxId ? mailboxById.get(c.outreachMailboxId) : null
-      const matchesSearch =
-        !q ||
-        includesSearch(
-          [
-            c.name,
-            c.domain,
-            c.website,
-            c.industry,
-            c.employeeRange,
-            c.hqLocation,
-            c.outreachStatus,
-            c.outreachStrategy,
-            c.outreachEmailInstructions,
-            c.enrichmentPayload,
-            mailbox?.email,
-            mailbox?.displayName,
-            mailbox?.senderBio,
-            mailbox?.outreachEmailInstructions,
-            relatedPeople.map((person) => [
-              person.fullName,
-              person.email,
-              person.phone,
-              person.linkedinUrl,
-              person.twitterUrl,
-              person.title,
-              person.seniority,
-              person.department,
-              person.lifecycleStatus,
-              person.notes,
-              person.context,
-              person.icpKeywords,
-              person.enrichmentSources
-            ])
-          ],
-          q
-        )
-      const matchesOutreach =
-        outreachFilter === 'all' || c.outreachStatus === outreachFilter
-      const matchesMailbox =
-        mailboxFilter === 'all' ||
-        (mailboxFilter === 'assigned' && Boolean(c.outreachMailboxId)) ||
-        (mailboxFilter === 'unassigned' && !c.outreachMailboxId) ||
-        c.outreachMailboxId === mailboxFilter
-      const peopleCount = peopleByCompany.get(c.id) ?? 0
-      const matchesPeople =
-        peopleFilter === 'all' ||
-        (peopleFilter === 'with_people' && peopleCount > 0) ||
-        (peopleFilter === 'without_people' && peopleCount === 0)
-      const pendingDrafts = pendingDraftsByCompany.get(c.id) ?? 0
-      const matchesDrafts =
-        draftFilter === 'all' ||
-        (draftFilter === 'pending' && pendingDrafts > 0) ||
-        (draftFilter === 'none' && pendingDrafts === 0)
-      const matchesAgentic = !agenticMatchIds || agenticMatchIds.has(c.id)
-      return (
-        matchesSearch &&
-        matchesOutreach &&
-        matchesMailbox &&
-        matchesPeople &&
-        matchesDrafts &&
-        matchesAgentic
-      )
-    })
-  }, [
-    search,
-    companies,
-    peopleByCompany,
-    peopleDetailsByCompany,
-    mailboxById,
-    pendingDraftsByCompany,
-    outreachFilter,
-    mailboxFilter,
-    peopleFilter,
-    draftFilter,
-    agenticMatchIds
-  ])
+  const visibleRows = agenticMatchIds
+    ? companies.filter((c) => agenticMatchIds.has(c.id))
+    : companies
 
   useEffect(() => {
-    onVisibleIdsChange(filtered.map((company) => company.id))
-  }, [filtered, onVisibleIdsChange])
+    onVisibleIdsChange(visibleRows.map((c) => c.id))
+  }, [visibleRows, onVisibleIdsChange])
 
   const activeMailboxes = useMemo(
     () => mailboxes.filter((m) => m.status === 'active'),
     [mailboxes]
   )
-  const outreachStatuses = useMemo(() => {
-    return Array.from(new Set(companies.map((c) => c.outreachStatus))).sort()
-  }, [companies])
 
   const activeFilterCount =
     (outreachFilter !== 'all' ? 1 : 0) +
@@ -220,6 +141,8 @@ export function CompaniesPage({
   const hasActiveFilters = activeFilterCount > 0
   const filterSummary =
     activeFilterCount > 0 ? 'Clear filters (' + activeFilterCount + ')' : 'Clear filters'
+
+  const trimmedSearch = search.trim()
 
   function clearFilters() {
     setOutreachFilter('all')
@@ -242,11 +165,11 @@ export function CompaniesPage({
       setSelected(new Set())
       return
     }
-    setSelected(new Set(filtered.map((c) => c.id)))
+    setSelected(new Set(visibleRows.map((c) => c.id)))
   }
 
   const allVisibleSelected =
-    filtered.length > 0 && filtered.every((c) => selected.has(c.id))
+    visibleRows.length > 0 && visibleRows.every((c) => selected.has(c.id))
 
   async function bulkStart() {
     if (selected.size === 0) return
@@ -394,7 +317,9 @@ export function CompaniesPage({
       cell: (c) =>
         c.website || c.domain ? (
           <a
-            href={c.website ?? `https://${c.domain}`}
+            href={
+              c.website ?? (c.domain ? 'https://' + c.domain : '')
+            }
             target="_blank"
             rel="noreferrer"
             onClick={(e) => e.stopPropagation()}
@@ -412,7 +337,7 @@ export function CompaniesPage({
       align: 'right',
       width: '70px',
       cell: (c) => {
-        const count = peopleByCompany.get(c.id) ?? 0
+        const count = typeof c.peopleCount === 'number' ? c.peopleCount : 0
         return (
           <span className="font-mono tabular text-[12.5px] text-ink-muted">{count}</span>
         )
@@ -469,7 +394,7 @@ export function CompaniesPage({
             className={filterSelectClass}
           >
             <option value="all">All statuses</option>
-            {outreachStatuses.map((status) => (
+            {OUTREACH_STATUS_VALUES.map((status) => (
               <option key={status} value={status}>
                 {status.replace(/_/g, ' ')}
               </option>
@@ -531,9 +456,7 @@ export function CompaniesPage({
       ) : null}
       {selected.size > 0 ? (
         <div className="flex items-center gap-3 border-b border-line bg-accent-soft px-5 py-2">
-          <span className="text-sm font-medium text-ink">
-            {selected.size} selected
-          </span>
+          <span className="text-sm font-medium text-ink">{selected.size} selected</span>
           <select
             value={bulkMailboxId ?? ''}
             onChange={(e) => setBulkMailboxId(e.target.value || null)}
@@ -581,16 +504,16 @@ export function CompaniesPage({
       ) : null}
       <DataTable
         columns={columns}
-        rows={filtered}
+        rows={visibleRows}
         rowKey={(c) => c.id}
         loading={loading}
-        hasMore={hasMore && !search && !hasActiveFilters && !agenticMatchIds}
+        hasMore={hasMore && !agenticMatchIds}
         onLoadMore={onLoadMore}
         onRowClick={onSelectCompany}
         selectedRowKey={selectedKey}
         minWidth="1100px"
         empty={
-          search || hasActiveFilters || agenticMatchIds
+          trimmedSearch || hasActiveFilters || agenticMatchIds
             ? {
                 icon: Filter,
                 title: 'No matching companies',

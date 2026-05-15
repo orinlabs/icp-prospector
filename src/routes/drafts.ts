@@ -1,9 +1,9 @@
-import { desc, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 
 import { db } from '../db/client.js'
-import { companies, mailboxes, outreachDrafts, outreachEvents, people } from '../db/schema.js'
+import { companies, mailboxes, outreachDrafts, people } from '../db/schema.js'
 import { sendMessage } from '../lib/gmail/send.js'
 import { appendMailboxSignature, appendMailboxSignatureHtml } from '../lib/mailboxSignature.js'
 import { startWorkAccount } from '../lib/workflowTrigger.js'
@@ -134,13 +134,30 @@ draftsRoutes.get('/:id', async (c) => {
     .limit(1)
   if (!row) return c.json({ error: 'not found' }, 404)
 
-  const recentEvents = row.company
+  const sentEmails = row.company
     ? await db
-        .select()
-        .from(outreachEvents)
-        .where(eq(outreachEvents.companyId, row.company.id))
-        .orderBy(desc(outreachEvents.createdAt))
-        .limit(20)
+        .select({
+          id: outreachDrafts.id,
+          toEmail: outreachDrafts.toEmail,
+          subject: outreachDrafts.subject,
+          sentAt: outreachDrafts.sentAt,
+          gmailMessageId: outreachDrafts.gmailMessageId,
+          person: {
+            id: people.id,
+            fullName: people.fullName,
+            title: people.title
+          }
+        })
+        .from(outreachDrafts)
+        .leftJoin(people, eq(people.id, outreachDrafts.personId))
+        .where(
+          and(
+            eq(outreachDrafts.companyId, row.company.id),
+            eq(outreachDrafts.status, 'sent')
+          )
+        )
+        .orderBy(desc(outreachDrafts.sentAt))
+        .limit(50)
     : []
 
   return c.json({
@@ -156,7 +173,7 @@ draftsRoutes.get('/:id', async (c) => {
       : null,
     person: row.person,
     strategy: row.company?.outreachStrategy ?? null,
-    recentEvents
+    sentEmails
   })
 })
 

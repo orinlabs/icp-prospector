@@ -1,4 +1,15 @@
-import { and, desc, eq, getTableColumns, inArray, isNotNull, isNull, sql, SQL } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  SQL
+} from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 
@@ -25,7 +36,24 @@ const peopleColumns = {
 const querySchema = z.object({
   has_email: z.enum(['true', 'false']).optional(),
   has_linkedin: z.enum(['true', 'false']).optional(),
+  company_id: z.string().uuid().optional(),
+  company_scope: z.enum(['assigned', 'unassigned']).optional(),
+  lifecycle: z
+    .string()
+    .optional()
+    .transform((s) => {
+      const t = (s ?? '').trim()
+      return t.length === 0 ? undefined : t.slice(0, 80)
+    }),
   campaign_id: z.string().uuid().optional(),
+  campaign_run_id: z.string().uuid().optional(),
+  q: z
+    .string()
+    .optional()
+    .transform((s) => {
+      const t = (s ?? '').trim()
+      return t.length === 0 ? undefined : t.slice(0, 200)
+    }),
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0)
 })
@@ -208,7 +236,12 @@ peopleRoutes.get('/', async (c) => {
   const parsed = querySchema.safeParse({
     has_email: c.req.query('has_email') ?? undefined,
     has_linkedin: c.req.query('has_linkedin') ?? undefined,
+    company_id: c.req.query('company_id') ?? undefined,
+    company_scope: c.req.query('company_scope') ?? undefined,
+    lifecycle: c.req.query('lifecycle') ?? undefined,
     campaign_id: c.req.query('campaign_id') ?? undefined,
+    campaign_run_id: c.req.query('campaign_run_id') ?? undefined,
+    q: c.req.query('q') ?? undefined,
     limit: c.req.query('limit') ?? undefined,
     offset: c.req.query('offset') ?? undefined
   })
@@ -216,7 +249,18 @@ peopleRoutes.get('/', async (c) => {
     return c.json({ error: parsed.error.flatten() }, 400)
   }
 
-  const { has_email, has_linkedin, campaign_id, limit, offset } = parsed.data
+  const {
+    has_email,
+    has_linkedin,
+    company_id,
+    company_scope,
+    lifecycle,
+    campaign_id,
+    campaign_run_id,
+    q,
+    limit,
+    offset
+  } = parsed.data
 
   const filters: SQL[] = []
   if (has_email === 'true') {
@@ -231,21 +275,68 @@ peopleRoutes.get('/', async (c) => {
   if (has_linkedin === 'false') {
     filters.push(isNull(people.linkedinUrl))
   }
+  if (company_id) {
+    filters.push(eq(people.companyId, company_id))
+  } else if (company_scope === 'assigned') {
+    filters.push(isNotNull(people.companyId))
+  } else if (company_scope === 'unassigned') {
+    filters.push(isNull(people.companyId))
+  }
+  if (lifecycle) {
+    filters.push(eq(people.lifecycleStatus, lifecycle))
+  }
   if (campaign_id) {
     filters.push(
       sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.campaignId} = ${campaign_id})`
     )
   }
+  if (campaign_run_id) {
+    filters.push(
+      sql`exists (select 1 from ${discoveryEvents} where ${discoveryEvents.personId} = ${people.id} and ${discoveryEvents.metadata}->>'campaignRunId' = ${campaign_run_id})`
+    )
+  }
 
   const whereClause = filters.length > 0 ? and(...filters) : undefined
 
-  const rows = await db
-    .select(peopleColumns)
-    .from(people)
-    .where(whereClause)
-    .orderBy(desc(people.createdAt))
-    .limit(limit)
-    .offset(offset)
+  const term = q?.toLowerCase()
+  const searchClause = term
+    ? or(
+        sql`position(${term} in lower(coalesce(${people.fullName}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.email}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.phone}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.title}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.seniority}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.department}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.linkedinUrl}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.twitterUrl}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.notes}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${people.context}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.name}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.domain}, ''))) > 0`,
+        sql`position(${term} in lower(coalesce(${companies.website}, ''))) > 0`
+      )
+    : undefined
+  const combinedWhere =
+    whereClause && searchClause
+      ? and(whereClause, searchClause)
+      : (whereClause ?? searchClause)
+
+  const rows = searchClause
+    ? await db
+        .select(peopleColumns)
+        .from(people)
+        .leftJoin(companies, eq(people.companyId, companies.id))
+        .where(combinedWhere)
+        .orderBy(desc(people.createdAt))
+        .limit(limit)
+        .offset(offset)
+    : await db
+        .select(peopleColumns)
+        .from(people)
+        .where(whereClause)
+        .orderBy(desc(people.createdAt))
+        .limit(limit)
+        .offset(offset)
 
   return c.json({ data: rows, limit, offset })
 })
