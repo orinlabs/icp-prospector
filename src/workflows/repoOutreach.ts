@@ -226,6 +226,41 @@ export async function getDraft(id: string): Promise<OutreachDraft | null> {
   return row ?? null
 }
 
+/** Hard-delete a draft still in review. Used by the work-account agent to remove mistakes. */
+export async function deleteOutreachDraft(
+  companyId: string,
+  draftId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const deleted = await db
+    .delete(outreachDrafts)
+    .where(
+      and(
+        eq(outreachDrafts.id, draftId),
+        eq(outreachDrafts.companyId, companyId),
+        eq(outreachDrafts.status, 'pending_review')
+      )
+    )
+    .returning({
+      id: outreachDrafts.id,
+      subject: outreachDrafts.subject,
+      toEmail: outreachDrafts.toEmail
+    })
+  const row = deleted[0]
+  if (!row) {
+    return {
+      ok: false,
+      error: 'draft not found, not pending_review, or does not belong to this company'
+    }
+  }
+  await appendOutreachEvent({
+    companyId,
+    kind: 'note',
+    summary: `Agent deleted draft: "${row.subject}"`,
+    details: { draftId: row.id, toEmail: row.toEmail }
+  })
+  return { ok: true }
+}
+
 export async function markDraftSent(
   id: string,
   gmail: { gmailMessageId: string; gmailThreadId: string | null }

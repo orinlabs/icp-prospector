@@ -1,5 +1,6 @@
 import {
   appendOutreachEvent,
+  deleteOutreachDraft,
   getCompanyForOutreach,
   insertDraft,
   listPeopleAtCompany,
@@ -20,7 +21,8 @@ import {
 } from './repo.js'
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const DEFAULT_MODEL = 'openai/gpt-5-mini'
+/** Work-account agent only; override with OPENROUTER_WORK_ACCOUNT_MODEL. */
+const WORK_ACCOUNT_MODEL = 'openai/gpt-5'
 
 const MAX_STEPS = 16
 const MAX_WEB_SEARCHES = 5
@@ -250,6 +252,23 @@ const TOOLS = [
   {
     type: 'function' as const,
     function: {
+      name: 'delete_draft',
+      description:
+        'Permanently remove a pending-review draft for THIS account (e.g. wrong recipient, bad angle, superseded). Only works while status is pending_review; cannot delete sent mail.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          draft_id: { type: 'string', description: 'Draft id from list_drafts.' },
+          reason: { type: 'string', description: 'One short sentence why you are deleting it.' }
+        },
+        required: ['draft_id', 'reason']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'draft_email',
       description:
         'Create an in-app email draft for the user to review and approve from the Drafts page. Does NOT touch Gmail. The user will approve and send (or discard) themselves. Include `agent_rationale`: a short justification for why this person, this angle, this content.',
@@ -261,7 +280,11 @@ const TOOLS = [
             type: ['string', 'null'],
             description: 'Linked person id (preferred). Use upsert_person first if needed.'
           },
-          to_email: { type: 'string', description: 'Recipient email.' },
+          to_email: {
+            type: 'string',
+            description:
+              'Recipient address you can defend: verified from web/DB, OR constructed from a company email pattern you found (e.g. first.last@domain) plus the person\'s real name — say so in agent_rationale. Never guess blindly.'
+          },
           subject: { type: 'string' },
           body: { type: 'string', description: 'Plaintext body.' },
           body_html: {
@@ -270,7 +293,8 @@ const TOOLS = [
           },
           agent_rationale: {
             type: 'string',
-            description: 'One short paragraph: why this person, why this hook, what response you hope for.'
+            description:
+              'Why this person and hook; if to_email was inferred from a company pattern, cite how you found the pattern and your confidence. Never omit evidence for the address.'
           }
         },
         required: ['person_id', 'to_email', 'subject', 'body', 'body_html', 'agent_rationale']
@@ -613,6 +637,21 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
           content: JSON.stringify({ ok: true, person_id: result.personId, created: result.created })
         }
       }
+      case 'delete_draft': {
+        const draftId = typeof args.draft_id === 'string' ? args.draft_id : ''
+        const reason = typeof args.reason === 'string' ? args.reason : ''
+        if (!draftId.trim()) {
+          return { kind: 'continue', content: JSON.stringify({ error: 'draft_id required' }) }
+        }
+        const out = await deleteOutreachDraft(ctx.companyId, draftId)
+        if (!out.ok) {
+          return { kind: 'continue', content: JSON.stringify({ error: out.error, reason }) }
+        }
+        return {
+          kind: 'continue',
+          content: JSON.stringify({ ok: true, deleted_draft_id: draftId, reason })
+        }
+      }
       case 'draft_email': {
         const toEmail = typeof args.to_email === 'string' ? args.to_email : ''
         const subject = typeof args.subject === 'string' ? args.subject : ''
@@ -707,7 +746,7 @@ async function callOpenRouter(messages: ChatMessage[]): Promise<{
   text: string | null
   finishReason: string | null
 }> {
-  const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL
+  const model = process.env.OPENROUTER_WORK_ACCOUNT_MODEL ?? WORK_ACCOUNT_MODEL
   const res = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -761,6 +800,12 @@ function buildSystemPrompt(): string {
     '- Public events: conferences they speak at, podcasts they appear on, summits they attend.',
     '- Content hooks: their recent blog posts, tweets, talks, hiring patterns, jobs posted.',
     '- Mutuals already in our DB (use search_existing_people).',
+    '',
+    'Recipient and email-address rules:',
+    '- Never draft_email to generic role inboxes (hello@, info@, contact@, sales@, support@, team@, office@, media@) unless the strategy explicitly targets that inbox AND you have sourced proof that this thread or owner is correct.',
+    '- Never use an address you cannot defend: prefer a verified address from the web, press, filings, or our DB. If you cannot find the exact address but you did find the company’s real pattern (e.g. first.last@domain.com, flast@, f.last@) from staff listings, press quotes, or similar, you MAY construct the likely address for a named individual and explain the pattern + sources in agent_rationale — that is acceptable when the pattern is well-supported even if the exact mailbox is unlisted.',
+    '- Do not fabricate domains, patterns, or people. If you lack both a verified address and a sourced pattern, do not draft — research more, record_event, then sleep or pause.',
+    '- If you wrote a bad draft, delete_draft it and replace with a corrected one rather than leaving junk in the queue.',
     '',
     'Hard rules:',
     '- Use only real, sourced information. Never invent a person, email, or fact.',
