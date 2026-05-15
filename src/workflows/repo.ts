@@ -2,7 +2,7 @@ import { and, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm'
 
 import { db } from '../db/client.js'
 import { campaignRuns, campaigns, companies, discoveryEvents, people } from '../db/schema.js'
-import { EXA_CONTENTS_COST_USD, EXA_SEARCH_COST_USD } from '../lib/pricing.js'
+import { estimateExaContentsCostUsd, estimateExaSearchCostUsd } from '../lib/pricing.js'
 import { recordUsageEvent } from '../lib/usage.js'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -208,10 +208,20 @@ export async function exaSearch(query: string, numResults: number): Promise<ExaR
   await recordUsageEvent({
     provider: 'exa',
     operation: 'search',
-    units: mapped.length,
-    costUsd: EXA_SEARCH_COST_USD,
+    units: 1,
+    costUsd: estimateExaSearchCostUsd({
+      requestedResults: numResults,
+      returnedResults: mapped.length,
+      includesSummary: true
+    }),
     estimated: true,
-    metadata: { query, requestedNumResults: numResults }
+    metadata: {
+      query,
+      requestedNumResults: numResults,
+      returnedResults: mapped.length,
+      includesSummary: true,
+      includesHighlights: true
+    }
   })
 
   return mapped
@@ -241,9 +251,9 @@ export async function exaFetchUrl(url: string): Promise<{ text: string | null; t
     provider: 'exa',
     operation: 'contents',
     units: 1,
-    costUsd: EXA_CONTENTS_COST_USD,
+    costUsd: estimateExaContentsCostUsd({ pages: 1, contentTypes: 1 }),
     estimated: true,
-    metadata: { url }
+    metadata: { url, contentTypes: ['text'] }
   })
 
   return { title: first?.title ?? null, text: first?.text ?? null }

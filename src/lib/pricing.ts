@@ -44,10 +44,47 @@ export function estimateChatCostUsd(
 }
 
 /**
- * Exa pricing is roughly:
- *  - $5 per 1k searches with default contents (highlights/summary)  → $0.005 / call
- *  - $1 per 1k contents requests                                    → $0.001 / call
- * These are used as fallbacks for visibility; treat as approximate.
+ * Exa API pricing as of 2026-05:
+ *  - Search: $7 per 1k requests, including up to 10 results with text/highlights.
+ *  - Additional search results above 10: $1 per 1k results.
+ *  - AI page summaries: $1 per 1k pages, billed separately.
+ *  - Contents: $1 per 1k pages per requested content type.
+ *
+ * These are fallback estimates for visibility when Exa does not return cost.
  */
-export const EXA_SEARCH_COST_USD = 0.005
-export const EXA_CONTENTS_COST_USD = 0.001
+export const EXA_SEARCH_REQUEST_COST_USD = 0.007
+export const EXA_ADDITIONAL_SEARCH_RESULT_COST_USD = 0.001
+export const EXA_AI_SUMMARY_COST_USD = 0.001
+export const EXA_CONTENTS_PAGE_CONTENT_TYPE_COST_USD = 0.001
+
+export function estimateExaSearchCostUsd(input: {
+  requestedResults: number
+  returnedResults: number
+  includesSummary: boolean
+}): number {
+  const requestedResults = Math.max(0, Math.floor(input.requestedResults))
+  const returnedResults = Math.max(0, Math.floor(input.returnedResults))
+  const additionalResults = Math.max(0, requestedResults - 10)
+  const summaryPages = input.includesSummary ? returnedResults : 0
+
+  return (
+    EXA_SEARCH_REQUEST_COST_USD +
+    additionalResults * EXA_ADDITIONAL_SEARCH_RESULT_COST_USD +
+    summaryPages * EXA_AI_SUMMARY_COST_USD
+  )
+}
+
+export function estimateExaContentsCostUsd(input: {
+  pages: number
+  contentTypes: number
+  summaries?: number
+}): number {
+  const pages = Math.max(0, Math.floor(input.pages))
+  const contentTypes = Math.max(0, Math.floor(input.contentTypes))
+  const summaries = Math.max(0, Math.floor(input.summaries ?? 0))
+
+  return (
+    pages * contentTypes * EXA_CONTENTS_PAGE_CONTENT_TYPE_COST_USD +
+    summaries * EXA_AI_SUMMARY_COST_USD
+  )
+}
