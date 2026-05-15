@@ -47,14 +47,16 @@ export function DraftDetailPanel({
     toEmail !== draft.toEmail || subject !== draft.subject || body !== draft.body
 
   async function saveEdits() {
-    if (!dirty) return
+    if (!dirty) return true
     setSavingEdit(true)
     onError(null)
     try {
       await apiPatch('/drafts/' + draft.id, { toEmail, subject, body })
       onChanged()
+      return true
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Save failed')
+      return false
     } finally {
       setSavingEdit(false)
     }
@@ -62,12 +64,8 @@ export function DraftDetailPanel({
 
   async function approve() {
     if (dirty) {
-      const proceed = confirm('You have unsaved edits. Save and send?')
-      if (!proceed) return
-      await saveEdits()
-    }
-    if (!confirm('Send this email to ' + toEmail + ' from ' + (mailbox?.email ?? '(no mailbox)') + '?')) {
-      return
+      const saved = await saveEdits()
+      if (!saved) return
     }
     setApproving(true)
     onError(null)
