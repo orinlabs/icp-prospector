@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm'
 
 import { db } from '../../db/client.js'
 import { mailboxes, type Mailbox } from '../../db/schema.js'
+import { syncSendAsDisplayName } from './sendAs.js'
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -14,6 +15,7 @@ const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo'
  */
 export const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.settings.basic',
   'https://www.googleapis.com/auth/userinfo.email',
   'openid'
 ] as const
@@ -144,6 +146,18 @@ export async function connectMailboxFromCode(
       })
       .where(eq(mailboxes.id, existing.id))
       .returning()
+    try {
+      await syncSendAsDisplayName(
+        tokens.access_token,
+        updated.email,
+        updated.displayName ?? info.name ?? null
+      )
+    } catch (err) {
+      console.warn(
+        `[gmail] sendAs displayName sync failed on connect for ${updated.email}:`,
+        err instanceof Error ? err.message : err
+      )
+    }
     return { mailbox: updated, alreadyExisted: true }
   }
 
@@ -160,6 +174,18 @@ export async function connectMailboxFromCode(
       status: 'active'
     })
     .returning()
+  try {
+    await syncSendAsDisplayName(
+      tokens.access_token,
+      created.email,
+      created.displayName ?? info.name ?? null
+    )
+  } catch (err) {
+    console.warn(
+      `[gmail] sendAs displayName sync failed on connect for ${created.email}:`,
+      err instanceof Error ? err.message : err
+    )
+  }
   return { mailbox: created, alreadyExisted: false }
 }
 

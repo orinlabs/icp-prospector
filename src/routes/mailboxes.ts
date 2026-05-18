@@ -6,7 +6,8 @@ import { z } from 'zod'
 
 import { db } from '../db/client.js'
 import { mailboxes } from '../db/schema.js'
-import { buildConsentUrl, connectMailboxFromCode } from '../lib/gmail/oauth.js'
+import { buildConsentUrl, connectMailboxFromCode, getValidAccessToken } from '../lib/gmail/oauth.js'
+import { syncSendAsDisplayName } from '../lib/gmail/sendAs.js'
 import type { AppVariables } from '../lib/orgs.js'
 
 export const mailboxesRoutes = new Hono<{ Variables: AppVariables }>()
@@ -133,6 +134,19 @@ mailboxesRoutes.patch('/:id', async (c) => {
     .where(and(eq(mailboxes.id, id), eq(mailboxes.organizationId, organizationId)))
     .returning()
   if (!updated) return c.json({ error: 'not found' }, 404)
+
+  if (parsed.data.displayName !== undefined && updated.status === 'active') {
+    try {
+      const { accessToken } = await getValidAccessToken(updated)
+      await syncSendAsDisplayName(accessToken, updated.email, updated.displayName)
+    } catch (err) {
+      console.warn(
+        `[mailboxes] sendAs displayName sync failed for ${updated.email}:`,
+        err instanceof Error ? err.message : err
+      )
+    }
+  }
+
   return c.json(redact(updated))
 })
 
