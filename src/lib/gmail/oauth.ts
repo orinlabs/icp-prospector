@@ -9,7 +9,7 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo'
 
 /**
- * Send + read threads (for reply/bounce detection) + send-as display name.
+ * Send + read threads (reply/bounce detection, Message-ID for outbound replies) + send-as.
  * Drafts live in our DB until the operator approves them on the Drafts page.
  */
 export const GMAIL_SCOPES = [

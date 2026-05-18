@@ -216,7 +216,7 @@ const TOOLS = [
     function: {
       name: 'list_drafts',
       description:
-        "Read this account's recent drafts (status, subject, body preview, to_email, open tracking for sent mail, agent_rationale, review_notes). Always call this before draft_email. At most one pending-review draft may exist per recipient address — if you need to rewrite to the same person, note the existing draft id and delete_draft it before drafting again.",
+        "Read this account's recent drafts (status, subject, body preview, to_email, open tracking for sent mail, agent_rationale, review_notes). Sent drafts with can_reply=true can be passed as reply_to_draft_id on a follow-up draft_email. Always call this before draft_email. At most one pending-review draft may exist per recipient address — if you need to rewrite to the same person, note the existing draft id and delete_draft it before drafting again.",
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -472,7 +472,7 @@ const TOOLS = [
     function: {
       name: 'draft_email',
       description:
-        'Create an in-app email draft for the user to review and approve from the Drafts page. Does NOT touch Gmail. Only one pending-review draft is allowed per to_email on this account — to revise an existing draft, delete_draft it first, then call draft_email again. Include `agent_rationale`: a short justification for why this person, this angle, this content.',
+        'Create an in-app email draft for the user to review and approve from the Drafts page. Does NOT touch Gmail. Only one pending-review draft is allowed per to_email on this account — to revise an existing draft, delete_draft it first, then call draft_email again. For follow-ups in an existing Gmail thread, set reply_to_draft_id to the id of a prior sent draft from list_drafts (status=sent). Include `agent_rationale`: a short justification for why this person, this angle, this content.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -486,11 +486,20 @@ const TOOLS = [
             description:
               'Recipient address you can defend: verified from web/DB, OR constructed from a company email pattern you found (e.g. first.last@domain) plus the person\'s real name — say so in agent_rationale. Never guess blindly.'
           },
-          subject: { type: 'string' },
+          subject: {
+            type: 'string',
+            description:
+              'Subject line. For replies, a Re: prefix is added automatically if missing; still write a clear subject.'
+          },
           body: { type: 'string', description: 'Plaintext body.' },
           body_html: {
             type: ['string', 'null'],
             description: 'Optional HTML version. Leave null for plaintext-only.'
+          },
+          reply_to_draft_id: {
+            type: ['string', 'null'],
+            description:
+              'Optional. Draft id from list_drafts with status=sent — threads this draft as a Gmail reply to that email.'
           },
           agent_rationale: {
             type: 'string',
@@ -498,7 +507,15 @@ const TOOLS = [
               'Why this person and hook; if to_email was inferred from a company pattern, cite how you found the pattern and your confidence. Never omit evidence for the address.'
           }
         },
-        required: ['person_id', 'to_email', 'subject', 'body', 'body_html', 'agent_rationale']
+        required: [
+          'person_id',
+          'to_email',
+          'subject',
+          'body',
+          'body_html',
+          'reply_to_draft_id',
+          'agent_rationale'
+        ]
       }
     }
   },
@@ -674,6 +691,8 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
               open_count: d.openCount,
               first_opened_at: d.firstOpenedAt,
               last_opened_at: d.lastOpenedAt,
+              reply_to_draft_id: d.replyToDraftId,
+              can_reply: d.status === 'sent' && Boolean(d.gmailThreadId),
               created_at: d.createdAt
             }))
           })
@@ -984,6 +1003,10 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
             content: JSON.stringify({ error: 'to_email, subject, and body are required' })
           }
         }
+        const replyToDraftId =
+          typeof args.reply_to_draft_id === 'string' && args.reply_to_draft_id.trim()
+            ? args.reply_to_draft_id.trim()
+            : null
         const inserted = await insertDraft({
           organizationId: ctx.organizationId,
           companyId: ctx.companyId,
@@ -993,19 +1016,20 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
           subject,
           body,
           bodyHtml: typeof args.body_html === 'string' ? args.body_html : null,
-          agentRationale: typeof args.agent_rationale === 'string' ? args.agent_rationale : null
+          agentRationale: typeof args.agent_rationale === 'string' ? args.agent_rationale : null,
+          replyToDraftId
         })
         if (!inserted.ok) {
-          return {
-            kind: 'continue',
-            content: JSON.stringify({
-              error: 'duplicate_pending_draft',
-              message: inserted.error,
-              existing_draft_id: inserted.existingDraftId,
-              existing_subject: inserted.existingSubject,
-              hint: 'Call delete_draft with existing_draft_id, then draft_email again.'
-            })
+          const payload: Record<string, unknown> = {
+            error: inserted.existingDraftId ? 'duplicate_pending_draft' : 'draft_rejected',
+            message: inserted.error
           }
+          if (inserted.existingDraftId) {
+            payload.existing_draft_id = inserted.existingDraftId
+            payload.existing_subject = inserted.existingSubject
+            payload.hint = 'Call delete_draft with existing_draft_id, then draft_email again.'
+          }
+          return { kind: 'continue', content: JSON.stringify(payload) }
         }
         ctx.draftsCreated += 1
         return {
@@ -1013,7 +1037,9 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
           content: JSON.stringify({
             ok: true,
             draft_id: inserted.draft.id,
-            status: inserted.draft.status
+            status: inserted.draft.status,
+            reply_to_draft_id: inserted.draft.replyToDraftId,
+            subject: inserted.draft.subject
           })
         }
       }
@@ -1169,6 +1195,7 @@ function buildSystemPrompt(): string {
     'Draft queue rules:',
     '- At most one pending-review draft per recipient address (to_email) on this account. The system rejects a second draft to the same address.',
     '- Before draft_email, call list_drafts. If a pending draft already exists for that recipient, delete_draft it first, then draft_email your revised version.',
+    '- For follow-ups after a sent email, use draft_email with reply_to_draft_id set to that sent draft\'s id (from list_drafts, can_reply=true). Write the body as a real reply; subject gets Re: automatically if needed.',
     '- If you wrote a bad draft, delete_draft it and replace with a corrected one rather than leaving junk in the queue.',
     '',
     'Hard rules:',
@@ -1283,9 +1310,11 @@ function buildSeedUserMessage(input: {
           .slice(0, 6)
           .map(
             (d) =>
-              `- [${d.status}] to=${d.toEmail} | "${d.subject}" | created_at=${d.createdAt.toISOString()}${
+              `- [${d.status}] id=${d.id} to=${d.toEmail} | "${d.subject}" | created_at=${d.createdAt.toISOString()}${
                 d.sentAt ? ` | sent_at=${d.sentAt.toISOString()}` : ''
               }${d.status === 'sent' ? ` | opens=${d.openCount}` : ''}${
+                d.status === 'sent' && d.gmailThreadId ? ' | replyable' : ''
+              }${d.replyToDraftId ? ` | replies_to=${d.replyToDraftId}` : ''}${
                 d.reviewNotes ? ` | user notes: ${d.reviewNotes}` : ''
               }`
           )

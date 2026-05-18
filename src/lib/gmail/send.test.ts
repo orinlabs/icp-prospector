@@ -30,6 +30,21 @@ describe('buildRfc5322', () => {
     })
     assert.match(raw, /^From: bryan@orinlabs\.ai/m)
   })
+
+  it('includes In-Reply-To and References when replying', () => {
+    const raw = buildRfc5322({
+      from: 'bryan@orinlabs.ai',
+      fromDisplay: 'Bryan Houlton',
+      to: 'bryan@learnwithorin.com',
+      subject: 'Re: Hello',
+      body: 'Follow up',
+      bodyHtml: null,
+      inReplyTo: '<abc@mail.gmail.com>',
+      references: '<abc@mail.gmail.com>'
+    })
+    assert.match(raw, /^In-Reply-To: <abc@mail\.gmail\.com>/m)
+    assert.match(raw, /^References: <abc@mail\.gmail\.com>/m)
+  })
 })
 
 describe('formatFromHeader', () => {
