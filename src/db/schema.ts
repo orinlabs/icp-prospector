@@ -145,6 +145,8 @@ export const outreachDrafts = pgTable(
     sentAt: timestamp('sent_at', { withTimezone: true }),
     gmailMessageId: text('gmail_message_id'),
     gmailThreadId: text('gmail_thread_id'),
+    gmailRfcMessageId: text('gmail_rfc_message_id'),
+    replyToDraftId: uuid('reply_to_draft_id'),
     sendError: text('send_error'),
     /** Opaque token embedded in the open-tracking pixel URL for this send. */
     trackingToken: text('tracking_token'),

@@ -71,6 +71,13 @@
       "when": 1778825550000,
       "tag": "0009_email_tracking",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1778826660000,
+      "tag": "0010_draft_email_replies",
+      "breakpoints": true
     }
   ]
 }

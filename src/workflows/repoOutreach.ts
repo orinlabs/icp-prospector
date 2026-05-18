@@ -136,6 +136,40 @@ export type InsertDraftInput = {
   body: string
   bodyHtml?: string | null
   agentRationale?: string | null
+  replyToDraftId?: string | null
+}
+
+function normalizeReplySubject(subject: string, parentSubject: string): string {
+  const trimmed = subject.trim()
+  if (/^re:\s/i.test(trimmed)) return trimmed
+  const base = parentSubject.replace(/^re:\s*/i, '').trim() || parentSubject.trim()
+  return `Re: ${base}`
+}
+
+export async function getSentDraftForReply(
+  companyId: string,
+  organizationId: string,
+  draftId: string
+): Promise<{ ok: true; draft: OutreachDraft } | { ok: false; error: string }> {
+  const [row] = await db
+    .select()
+    .from(outreachDrafts)
+    .where(
+      and(
+        eq(outreachDrafts.id, draftId),
+        eq(outreachDrafts.companyId, companyId),
+        eq(outreachDrafts.organizationId, organizationId)
+      )
+    )
+    .limit(1)
+  if (!row) return { ok: false, error: 'reply_to_draft_id not found on this account' }
+  if (row.status !== 'sent') {
+    return { ok: false, error: 'reply_to_draft_id must reference a sent email (status=sent)' }
+  }
+  if (!row.gmailThreadId) {
+    return { ok: false, error: 'prior email has no Gmail thread id; cannot thread a reply' }
+  }
+  return { ok: true, draft: row }
 }
 
 export async function findPendingDraftForEmail(
@@ -165,7 +199,7 @@ export async function insertDraft(
   input: InsertDraftInput
 ): Promise<
   | { ok: true; draft: OutreachDraft }
-  | { ok: false; error: string; existingDraftId: string; existingSubject: string }
+  | { ok: false; error: string; existingDraftId?: string; existingSubject?: string }
 > {
   const toEmail = normalizeEmail(input.toEmail) ?? input.toEmail.trim().toLowerCase()
   const existing = await findPendingDraftForEmail(input.companyId, input.organizationId, toEmail)
@@ -178,6 +212,23 @@ export async function insertDraft(
       existingSubject: existing.subject
     }
   }
+
+  let replyToDraftId: string | null = null
+  let gmailThreadId: string | null = null
+  let subject = input.subject
+
+  if (input.replyToDraftId?.trim()) {
+    const parent = await getSentDraftForReply(
+      input.companyId,
+      input.organizationId,
+      input.replyToDraftId.trim()
+    )
+    if (!parent.ok) return { ok: false, error: parent.error }
+    replyToDraftId = parent.draft.id
+    gmailThreadId = parent.draft.gmailThreadId
+    subject = normalizeReplySubject(subject, parent.draft.subject)
+  }
+
   const [row] = await db
     .insert(outreachDrafts)
     .values({
@@ -186,10 +237,12 @@ export async function insertDraft(
       mailboxId: input.mailboxId,
       personId: input.personId ?? null,
       toEmail,
-      subject: input.subject,
+      subject,
       body: input.body,
       bodyHtml: input.bodyHtml ?? null,
       agentRationale: input.agentRationale ?? null,
+      replyToDraftId,
+      gmailThreadId,
       status: 'pending_review'
     })
     .returning()
@@ -546,7 +599,11 @@ export async function deleteOutreachDraft(
 export async function markDraftSent(
   id: string,
   organizationId: string,
-  gmail: { gmailMessageId: string; gmailThreadId: string | null },
+  gmail: {
+    gmailMessageId: string
+    gmailThreadId: string | null
+    gmailRfcMessageId?: string | null
+  },
   trackingToken: string
 ): Promise<OutreachDraft> {
   const [row] = await db
@@ -556,6 +613,7 @@ export async function markDraftSent(
       sentAt: new Date(),
       gmailMessageId: gmail.gmailMessageId,
       gmailThreadId: gmail.gmailThreadId,
+      gmailRfcMessageId: gmail.gmailRfcMessageId ?? null,
       trackingToken,
       sendError: null,
       updatedAt: new Date()

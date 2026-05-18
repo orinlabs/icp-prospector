@@ -244,6 +244,8 @@ export type OutreachDraft = {
   sentAt: string | null
   gmailMessageId: string | null
   gmailThreadId: string | null
+  gmailRfcMessageId: string | null
+  replyToDraftId: string | null
   sendError: string | null
   createdAt: string
   updatedAt: string

@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { db } from '../db/client.js'
 import { companies, mailboxes, outreachDrafts, people } from '../db/schema.js'
 import { createTrackingToken, injectTrackingPixel } from '../lib/emailTracking/pixel.js'
+import { resolveReplyContextForDraft } from '../lib/gmail/replyContext.js'
 import { sendMessage } from '../lib/gmail/send.js'
 import { appendMailboxSignature, appendMailboxSignatureHtml } from '../lib/mailboxSignature.js'
 import type { AppVariables } from '../lib/orgs.js'
@@ -236,13 +237,16 @@ draftsRoutes.post('/:id/approve', async (c) => {
     const trackingToken = createTrackingToken()
     const outgoingBodyHtml = injectTrackingPixel(baseHtml, outgoingBody, trackingToken)
 
+    const reply = await resolveReplyContextForDraft(existing.mailboxId, existing)
     const sent = await sendMessage({
       mailboxId: existing.mailboxId,
       to: existing.toEmail,
       subject: existing.subject,
       body: outgoingBody,
       bodyHtml: outgoingBodyHtml,
-      threadId: existing.gmailThreadId
+      threadId: reply?.threadId ?? existing.gmailThreadId,
+      inReplyTo: reply?.inReplyTo ?? null,
+      references: reply?.references ?? null
     })
     const updated = await markDraftSent(id, organizationId, sent, trackingToken)
     await appendOutreachEvent({

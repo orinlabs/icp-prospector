@@ -1,3 +1,4 @@
+import { fetchGmailRfcMessageId } from './messageHeaders.js'
 import { getMailbox, getValidAccessToken } from './oauth.js'
 import { formatFromHeader, resolveSenderDisplayName } from './sendAs.js'
 
@@ -10,11 +11,14 @@ export type SendMessageInput = {
   body: string
   bodyHtml?: string | null
   threadId?: string | null
+  inReplyTo?: string | null
+  references?: string | null
 }
 
 export type SendMessageResult = {
   gmailMessageId: string
   gmailThreadId: string | null
+  gmailRfcMessageId: string | null
 }
 
 function encodeHeader(value: string): string {
@@ -34,6 +38,8 @@ export function buildRfc5322(input: {
   subject: string
   body: string
   bodyHtml: string | null
+  inReplyTo?: string | null
+  references?: string | null
 }): string {
   const fromHeader = input.fromDisplay
     ? formatFromHeader(input.from, input.fromDisplay)
@@ -45,6 +51,12 @@ export function buildRfc5322(input: {
     `Subject: ${encodeHeader(input.subject)}`,
     'MIME-Version: 1.0'
   ]
+  if (input.inReplyTo?.trim()) {
+    headers.push(`In-Reply-To: ${input.inReplyTo.trim()}`)
+  }
+  if (input.references?.trim()) {
+    headers.push(`References: ${input.references.trim()}`)
+  }
 
   if (input.bodyHtml && input.bodyHtml.trim()) {
     const boundary = '====slate_boundary_' + Math.random().toString(36).slice(2)
@@ -109,7 +121,9 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     to: input.to,
     subject: input.subject,
     body: input.body,
-    bodyHtml: input.bodyHtml ?? null
+    bodyHtml: input.bodyHtml ?? null,
+    inReplyTo: input.inReplyTo ?? null,
+    references: input.references ?? null
   })
   const encoded = base64UrlEncode(raw)
 
@@ -132,8 +146,18 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   if (!payload.id) {
     throw new Error('Gmail send succeeded but returned no message id.')
   }
+
+  let gmailRfcMessageId: string | null = null
+  try {
+    gmailRfcMessageId = await fetchGmailRfcMessageId(accessToken, payload.id)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`[gmail] could not fetch Message-ID for sent message ${payload.id}: ${message}`)
+  }
+
   return {
     gmailMessageId: payload.id,
-    gmailThreadId: payload.threadId ?? null
+    gmailThreadId: payload.threadId ?? null,
+    gmailRfcMessageId
   }
 }
