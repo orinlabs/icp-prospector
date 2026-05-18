@@ -9,6 +9,7 @@ export function isAuthPublicApiPath(pathname: string): boolean {
     return true
   }
   if (pathname === '/mailboxes/oauth/callback') return true
+  if (pathname.startsWith('/t/')) return true
   return false
 }
 

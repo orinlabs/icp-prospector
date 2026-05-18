@@ -24,6 +24,7 @@ import { mailboxesRoutes } from './routes/mailboxes.js'
 import { organizationsRoutes } from './routes/organizations.js'
 import { peopleRoutes } from './routes/people.js'
 import { usageRoutes } from './routes/usage.js'
+import { trackingRoutes } from './routes/tracking.js'
 
 const app = new Hono<{ Variables: AppVariables }>()
 
@@ -33,6 +34,8 @@ const allowedOrigins = (
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
+
+app.route('/t', trackingRoutes)
 
 app.use(
   '*',

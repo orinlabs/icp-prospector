@@ -4,6 +4,7 @@ import { z } from 'zod'
 
 import { db } from '../db/client.js'
 import { companies, mailboxes, outreachDrafts, people } from '../db/schema.js'
+import { createTrackingToken, injectTrackingPixel } from '../lib/emailTracking/pixel.js'
 import { sendMessage } from '../lib/gmail/send.js'
 import { appendMailboxSignature, appendMailboxSignatureHtml } from '../lib/mailboxSignature.js'
 import type { AppVariables } from '../lib/orgs.js'
@@ -228,10 +229,12 @@ draftsRoutes.post('/:id/approve', async (c) => {
       .limit(1)
     const signature = mailbox?.signature ?? null
     const outgoingBody = appendMailboxSignature(existing.body, signature)
-    const outgoingBodyHtml =
+    const baseHtml =
       existing.bodyHtml?.trim() && signature
         ? appendMailboxSignatureHtml(existing.bodyHtml, signature)
         : existing.bodyHtml
+    const trackingToken = createTrackingToken()
+    const outgoingBodyHtml = injectTrackingPixel(baseHtml, outgoingBody, trackingToken)
 
     const sent = await sendMessage({
       mailboxId: existing.mailboxId,
@@ -241,7 +244,7 @@ draftsRoutes.post('/:id/approve', async (c) => {
       bodyHtml: outgoingBodyHtml,
       threadId: existing.gmailThreadId
     })
-    const updated = await markDraftSent(id, organizationId, sent)
+    const updated = await markDraftSent(id, organizationId, sent, trackingToken)
     await appendOutreachEvent({
       organizationId,
       companyId: existing.companyId,

@@ -9,12 +9,12 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo'
 
 /**
- * Minimal scopes: send-only + identity. We do NOT request gmail.compose
- * or any read scope; drafts live in our DB until the user approves them
- * via the Drafts page, at which point we call users.messages.send.
+ * Send + read threads (for reply/bounce detection) + send-as display name.
+ * Drafts live in our DB until the operator approves them on the Drafts page.
  */
 export const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.settings.basic',
   'https://www.googleapis.com/auth/userinfo.email',
   'openid'

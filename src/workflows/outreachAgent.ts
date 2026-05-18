@@ -6,6 +6,8 @@ import {
   listPeopleAtCompany,
   listRecentDrafts,
   listRecentOutreachEvents,
+  listSentDraftEngagement,
+  listThreadMessagesForCompany,
   markCompanyOutreachStatus,
   setNextWake,
   updateCompanyDetails,
@@ -21,6 +23,7 @@ import {
   searchCompanies,
   searchPeople
 } from './repo.js'
+import { syncCompanyDraftThreads } from '../lib/gmail/threadSync.js'
 import { LAVENDER_COLD_EMAIL_101_PROMPT_BLOCK } from '../lib/lavenderColdEmail101.js'
 import { openRouterReasoningConfig } from '../lib/openrouter.js'
 
@@ -199,7 +202,7 @@ const TOOLS = [
     function: {
       name: 'list_recent_events',
       description:
-        "Read this account's timeline (most recent first): emails sent, send failures, operator discards/regenerates, strategy revisions, and session notes. You cannot append to it — use update_strategy for durable notes between runs.",
+        "Read this account's timeline (most recent first): emails sent, opens, replies, bounces, send failures, operator discards/regenerates, strategy revisions, and session notes. You cannot append to it — use update_strategy for durable notes between runs.",
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -213,12 +216,29 @@ const TOOLS = [
     function: {
       name: 'list_drafts',
       description:
-        "Read this account's recent drafts (status, subject, body preview, to_email, agent_rationale, review_notes). Always call this before draft_email. At most one pending-review draft may exist per recipient address — if you need to rewrite to the same person, note the existing draft id and delete_draft it before drafting again.",
+        "Read this account's recent drafts (status, subject, body preview, to_email, open tracking for sent mail, agent_rationale, review_notes). Always call this before draft_email. At most one pending-review draft may exist per recipient address — if you need to rewrite to the same person, note the existing draft id and delete_draft it before drafting again.",
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: { limit: { type: 'integer', minimum: 1, maximum: 25 } },
         required: ['limit']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'list_email_engagement',
+      description:
+        'Read sent-email engagement for this account: open counts/timestamps and any captured replies or bounces (full message bodies when available). Call this when deciding follow-ups.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          sent_limit: { type: 'integer', minimum: 1, maximum: 25 },
+          thread_limit: { type: 'integer', minimum: 1, maximum: 25 }
+        },
+        required: ['sent_limit', 'thread_limit']
       }
     }
   },
@@ -599,8 +619,39 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
               id: e.id,
               kind: e.kind,
               summary: e.summary,
+              details: e.details ?? null,
               source_url: e.sourceUrl,
               created_at: e.createdAt
+            }))
+          })
+        }
+      }
+      case 'list_email_engagement': {
+        const sentLimit = clamp(Number(args.sent_limit) || 15, 1, 25)
+        const threadLimit = clamp(Number(args.thread_limit) || 15, 1, 25)
+        const [sent, threads] = await Promise.all([
+          listSentDraftEngagement(ctx.companyId, ctx.organizationId, sentLimit),
+          listThreadMessagesForCompany(ctx.companyId, ctx.organizationId, threadLimit)
+        ])
+        return {
+          kind: 'continue',
+          content: JSON.stringify({
+            sent_emails: sent.map((d) => ({
+              draft_id: d.id,
+              to_email: d.toEmail,
+              subject: d.subject,
+              sent_at: d.sentAt,
+              open_count: d.openCount,
+              first_opened_at: d.firstOpenedAt,
+              last_opened_at: d.lastOpenedAt
+            })),
+            thread_messages: threads.map((m) => ({
+              draft_id: m.draftId,
+              kind: m.kind,
+              from_email: m.fromEmail,
+              subject: m.subject,
+              body_text: m.bodyText,
+              received_at: m.receivedAt
             }))
           })
         }
@@ -620,6 +671,9 @@ async function dispatchTool(ctx: ToolCtx, call: ToolCall): Promise<ToolDispatchR
               agent_rationale: d.agentRationale,
               review_notes: d.reviewNotes,
               sent_at: d.sentAt,
+              open_count: d.openCount,
+              first_opened_at: d.firstOpenedAt,
+              last_opened_at: d.lastOpenedAt,
               created_at: d.createdAt
             }))
           })
@@ -1122,7 +1176,7 @@ function buildSystemPrompt(): string {
     '- Drafts you create with draft_email do NOT get sent automatically. The operator reviews them in the Drafts UI and approves them; only then do they send.',
     '- Be specific. Generic cold copy is rejected by the operator.',
     '- In draft_email subject and body: do not use an em dash (the long punctuation dash, U+2014). Use a comma, period, colon, hyphen, or parentheses instead.',
-    '- When emails are actually sent from the Drafts UI, the system records that on the timeline automatically; use list_recent_events to see sends and failures.',
+    '- When emails are sent from the Drafts UI, the system records sends/opens/replies/bounces on the timeline. Use list_recent_events, list_email_engagement, and list_drafts before deciding follow-ups.',
     '- Always end the session with sleep, pause, or mark_completed. Never just stop talking.',
     '- Communicate only through tool calls; do not produce a final text answer.'
   ].join('\n')
@@ -1133,10 +1187,13 @@ function buildSeedUserMessage(input: {
   strategy: string | null
   events: Awaited<ReturnType<typeof listRecentOutreachEvents>>
   drafts: Awaited<ReturnType<typeof listRecentDrafts>>
+  sentEngagement: Awaited<ReturnType<typeof listSentDraftEngagement>>
+  threadMessages: Awaited<ReturnType<typeof listThreadMessagesForCompany>>
   people: Awaited<ReturnType<typeof listPeopleAtCompany>>
   now: Date
 }): string {
-  const { company, strategy, events, drafts, people: peopleList, now } = input
+  const { company, strategy, events, drafts, sentEngagement, threadMessages, people: peopleList, now } =
+    input
   const mailboxBlock = company.mailbox
     ? [
         `You are sending from: ${company.mailbox.email}` +
@@ -1182,9 +1239,41 @@ function buildSeedUserMessage(input: {
             (e) =>
               `- ${e.createdAt.toISOString()} [${e.kind}] ${e.summary}${
                 e.sourceUrl ? ` (${e.sourceUrl})` : ''
+              }${
+                e.details && Object.keys(e.details).length > 0
+                  ? ` | ${JSON.stringify(e.details).slice(0, 240)}`
+                  : ''
               }`
           )
           .join('\n')
+
+  const engagementBlock =
+    sentEngagement.length === 0 && threadMessages.length === 0
+      ? 'Email engagement: no sent mail tracked yet.'
+      : [
+          sentEngagement.length > 0
+            ? 'Sent mail (opens):\n' +
+              sentEngagement
+                .map(
+                  (d) =>
+                    `- to=${d.toEmail} | "${d.subject}" | sent=${d.sentAt?.toISOString() ?? '?'} | opens=${d.openCount}${
+                      d.firstOpenedAt ? ` | first_open=${d.firstOpenedAt.toISOString()}` : ''
+                    }`
+                )
+                .join('\n')
+            : '',
+          threadMessages.length > 0
+            ? 'Replies / bounces:\n' +
+              threadMessages
+                .map(
+                  (m) =>
+                    `- [${m.kind}] ${m.receivedAt.toISOString()} from=${m.fromEmail ?? '?'} re: ${m.subject ?? '(no subject)'}\n  ${(m.bodyText ?? '').slice(0, 400).replace(/\s+/g, ' ')}`
+                )
+                .join('\n')
+            : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n')
 
   const draftsBlock =
     drafts.length === 0
@@ -1196,7 +1285,9 @@ function buildSeedUserMessage(input: {
             (d) =>
               `- [${d.status}] to=${d.toEmail} | "${d.subject}" | created_at=${d.createdAt.toISOString()}${
                 d.sentAt ? ` | sent_at=${d.sentAt.toISOString()}` : ''
-              }${d.reviewNotes ? ` | user notes: ${d.reviewNotes}` : ''}`
+              }${d.status === 'sent' ? ` | opens=${d.openCount}` : ''}${
+                d.reviewNotes ? ` | user notes: ${d.reviewNotes}` : ''
+              }`
           )
           .join('\n')
 
@@ -1230,6 +1321,8 @@ function buildSeedUserMessage(input: {
     strategyBlock,
     '',
     eventsBlock,
+    '',
+    engagementBlock,
     '',
     draftsBlock,
     '',
@@ -1265,10 +1358,21 @@ export async function workAccountAgent(input: AgentInput): Promise<WorkAccountAg
     }
   }
 
-  const [strategy, events, drafts, peopleList] = await Promise.all([
+  try {
+    await syncCompanyDraftThreads(company.id, organizationId)
+  } catch (err) {
+    console.warn(
+      `[outreachAgent] thread sync failed for company ${company.id}:`,
+      err instanceof Error ? err.message : err
+    )
+  }
+
+  const [strategy, events, drafts, sentEngagement, threadMessages, peopleList] = await Promise.all([
     Promise.resolve(company.outreachStrategy),
     listRecentOutreachEvents(company.id, organizationId, 25),
     listRecentDrafts(company.id, organizationId, 10),
+    listSentDraftEngagement(company.id, organizationId, 12),
+    listThreadMessagesForCompany(company.id, organizationId, 12),
     listPeopleAtCompany(company.id, organizationId, 25)
   ])
 
@@ -1276,7 +1380,16 @@ export async function workAccountAgent(input: AgentInput): Promise<WorkAccountAg
     { role: 'system', content: buildSystemPrompt() },
     {
       role: 'user',
-      content: buildSeedUserMessage({ company, strategy, events, drafts, people: peopleList, now })
+      content: buildSeedUserMessage({
+        company,
+        strategy,
+        events,
+        drafts,
+        sentEngagement,
+        threadMessages,
+        people: peopleList,
+        now
+      })
     }
   ]
 

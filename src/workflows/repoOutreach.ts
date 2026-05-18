@@ -6,11 +6,13 @@ import {
   mailboxes,
   outreachDrafts,
   outreachEvents,
+  outreachThreadMessages,
   people,
   type Company,
   type Mailbox,
   type OutreachDraft,
-  type OutreachEvent
+  type OutreachEvent,
+  type OutreachThreadMessage
 } from '../db/schema.js'
 import {
   cleanNullable,
@@ -544,7 +546,8 @@ export async function deleteOutreachDraft(
 export async function markDraftSent(
   id: string,
   organizationId: string,
-  gmail: { gmailMessageId: string; gmailThreadId: string | null }
+  gmail: { gmailMessageId: string; gmailThreadId: string | null },
+  trackingToken: string
 ): Promise<OutreachDraft> {
   const [row] = await db
     .update(outreachDrafts)
@@ -553,12 +556,71 @@ export async function markDraftSent(
       sentAt: new Date(),
       gmailMessageId: gmail.gmailMessageId,
       gmailThreadId: gmail.gmailThreadId,
+      trackingToken,
       sendError: null,
       updatedAt: new Date()
     })
     .where(and(eq(outreachDrafts.id, id), eq(outreachDrafts.organizationId, organizationId)))
     .returning()
   return row
+}
+
+export type SentDraftEngagement = {
+  id: string
+  toEmail: string
+  subject: string
+  sentAt: Date | null
+  openCount: number
+  firstOpenedAt: Date | null
+  lastOpenedAt: Date | null
+  gmailThreadId: string | null
+}
+
+export async function listSentDraftEngagement(
+  companyId: string,
+  organizationId: string,
+  limit = 15
+): Promise<SentDraftEngagement[]> {
+  const rows = await db
+    .select({
+      id: outreachDrafts.id,
+      toEmail: outreachDrafts.toEmail,
+      subject: outreachDrafts.subject,
+      sentAt: outreachDrafts.sentAt,
+      openCount: outreachDrafts.openCount,
+      firstOpenedAt: outreachDrafts.firstOpenedAt,
+      lastOpenedAt: outreachDrafts.lastOpenedAt,
+      gmailThreadId: outreachDrafts.gmailThreadId
+    })
+    .from(outreachDrafts)
+    .where(
+      and(
+        eq(outreachDrafts.companyId, companyId),
+        eq(outreachDrafts.organizationId, organizationId),
+        eq(outreachDrafts.status, 'sent')
+      )
+    )
+    .orderBy(desc(outreachDrafts.sentAt))
+    .limit(limit)
+  return rows
+}
+
+export async function listThreadMessagesForCompany(
+  companyId: string,
+  organizationId: string,
+  limit = 20
+): Promise<OutreachThreadMessage[]> {
+  return db
+    .select()
+    .from(outreachThreadMessages)
+    .where(
+      and(
+        eq(outreachThreadMessages.companyId, companyId),
+        eq(outreachThreadMessages.organizationId, organizationId)
+      )
+    )
+    .orderBy(desc(outreachThreadMessages.receivedAt))
+    .limit(limit)
 }
 
 export async function markDraftFailed(

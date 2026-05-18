@@ -1,5 +1,5 @@
 import { getMailbox, getValidAccessToken } from './oauth.js'
-import { syncSendAsDisplayName } from './sendAs.js'
+import { formatFromHeader, resolveSenderDisplayName } from './sendAs.js'
 
 const SEND_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'
 
@@ -26,14 +26,21 @@ function encodeHeader(value: string): string {
   return value
 }
 
-/** Exported for tests. Gmail API applies send-as identity; do not set From in raw MIME. */
+/** Exported for tests. Gmail API needs an explicit quoted From to show the sender name. */
 export function buildRfc5322(input: {
+  from: string
+  fromDisplay: string | null
   to: string
   subject: string
   body: string
   bodyHtml: string | null
 }): string {
+  const fromHeader = input.fromDisplay
+    ? formatFromHeader(input.from, input.fromDisplay)
+    : input.from
+
   const headers: string[] = [
+    `From: ${fromHeader}`,
     `To: ${input.to}`,
     `Subject: ${encodeHeader(input.subject)}`,
     'MIME-Version: 1.0'
@@ -83,19 +90,22 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   }
   const { accessToken } = await getValidAccessToken(mailbox)
 
+  let fromDisplay: string | null = mailbox.displayName?.trim() ?? null
   try {
-    await syncSendAsDisplayName(accessToken, mailbox.email, mailbox.displayName)
+    fromDisplay = await resolveSenderDisplayName(accessToken, mailbox.email, mailbox.displayName)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     const needsReconnect = message.includes('403') || message.includes('insufficient')
     console.warn(
-      `[gmail] sendAs displayName sync failed for ${mailbox.email}` +
+      `[gmail] sendAs displayName resolve failed for ${mailbox.email}` +
         (needsReconnect ? ' (reconnect mailbox for gmail.settings.basic scope)' : '') +
         `: ${message}`
     )
   }
 
   const raw = buildRfc5322({
+    from: mailbox.email,
+    fromDisplay,
     to: input.to,
     subject: input.subject,
     body: input.body,

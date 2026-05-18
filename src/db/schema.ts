@@ -146,6 +146,12 @@ export const outreachDrafts = pgTable(
     gmailMessageId: text('gmail_message_id'),
     gmailThreadId: text('gmail_thread_id'),
     sendError: text('send_error'),
+    /** Opaque token embedded in the open-tracking pixel URL for this send. */
+    trackingToken: text('tracking_token'),
+    openCount: integer('open_count').notNull().default(0),
+    firstOpenedAt: timestamp('first_opened_at', { withTimezone: true }),
+    lastOpenedAt: timestamp('last_opened_at', { withTimezone: true }),
+    threadSyncedAt: timestamp('thread_synced_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
   },
@@ -154,7 +160,60 @@ export const outreachDrafts = pgTable(
     index('outreach_drafts_company_idx').on(t.companyId),
     index('outreach_drafts_mailbox_idx').on(t.mailboxId),
     index('outreach_drafts_status_idx').on(t.status),
-    index('outreach_drafts_created_idx').on(t.createdAt)
+    index('outreach_drafts_created_idx').on(t.createdAt),
+    uniqueIndex('outreach_drafts_tracking_token_unique')
+      .on(t.trackingToken)
+      .where(sql`${t.trackingToken} is not null`)
+  ]
+)
+
+export const outreachEmailOpens = pgTable(
+  'outreach_email_opens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    draftId: uuid('draft_id')
+      .notNull()
+      .references(() => outreachDrafts.id, { onDelete: 'cascade' }),
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
+    userAgent: text('user_agent'),
+    ipHash: text('ip_hash')
+  },
+  (t) => [
+    index('outreach_email_opens_draft_idx').on(t.draftId),
+    index('outreach_email_opens_opened_idx').on(t.openedAt)
+  ]
+)
+
+export const outreachThreadMessages = pgTable(
+  'outreach_thread_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    companyId: uuid('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'cascade' }),
+    draftId: uuid('draft_id')
+      .notNull()
+      .references(() => outreachDrafts.id, { onDelete: 'cascade' }),
+    gmailMessageId: text('gmail_message_id').notNull(),
+    kind: text('kind').notNull(),
+    fromEmail: text('from_email'),
+    toEmail: text('to_email'),
+    subject: text('subject'),
+    bodyText: text('body_text'),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex('outreach_thread_messages_gmail_message_unique').on(t.gmailMessageId),
+    index('outreach_thread_messages_draft_idx').on(t.draftId),
+    index('outreach_thread_messages_company_idx').on(t.companyId),
+    index('outreach_thread_messages_received_idx').on(t.receivedAt)
   ]
 )
 
@@ -466,6 +525,7 @@ export type UsageEvent = typeof usageEvents.$inferSelect
 export type Mailbox = typeof mailboxes.$inferSelect
 export type OutreachEvent = typeof outreachEvents.$inferSelect
 export type OutreachDraft = typeof outreachDrafts.$inferSelect
+export type OutreachThreadMessage = typeof outreachThreadMessages.$inferSelect
 export type AppUser = typeof appUsers.$inferSelect
 export type AppSession = typeof appSessions.$inferSelect
 export type Organization = typeof organizations.$inferSelect

@@ -1,6 +1,13 @@
 const SEND_AS_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs'
 
-/** Gmail applies the send-as display name to outbound API mail; MIME From names are ignored. */
+/** RFC 5322 From with quoted display name (required for Gmail API to show sender name). */
+export function formatFromHeader(email: string, displayName: string): string {
+  const name = displayName.trim()
+  if (!name) return email
+  const escaped = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `"${escaped}" <${email}>`
+}
+
 export async function syncSendAsDisplayName(
   accessToken: string,
   sendAsEmail: string,
@@ -32,4 +39,14 @@ export async function getSendAsDisplayName(
   if (!res.ok) return null
   const payload = (await res.json()) as { displayName?: string }
   return payload.displayName?.trim() || null
+}
+
+/** Prefer Gmail send-as name after sync; fall back to the mailbox row. */
+export async function resolveSenderDisplayName(
+  accessToken: string,
+  sendAsEmail: string,
+  mailboxDisplayName: string | null | undefined
+): Promise<string | null> {
+  await syncSendAsDisplayName(accessToken, sendAsEmail, mailboxDisplayName)
+  return (await getSendAsDisplayName(accessToken, sendAsEmail)) ?? mailboxDisplayName?.trim() ?? null
 }
